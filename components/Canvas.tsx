@@ -26,9 +26,18 @@ export default function Canvas() {
   const [editingValue, setEditingValue] = useState("");
   const [editingScreenPos, setEditingScreenPos] = useState({ x: 0, y: 0 });
 
+  const [isDark, setIsDark] = useState(false);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const trRef = useRef<any>(null);
   const shapeRefs = useRef<Record<string, any>>({});
+
+  // Theme colors — everything reads from here, so light/dark stay consistent
+  const colors = {
+    background: isDark ? "#111111" : "#ffffff",
+    grid: isDark ? "#333333" : "#dddddd",
+    text: isDark ? "#ededed" : "#171717",
+  };
 
   useEffect(() => {
     function updateSize() {
@@ -37,6 +46,18 @@ export default function Canvas() {
     updateSize();
     window.addEventListener("resize", updateSize);
     return () => window.removeEventListener("resize", updateSize);
+  }, []);
+
+  // Detect system dark mode, and keep watching in case the user changes it live
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    setIsDark(mediaQuery.matches);
+
+    function handleChange(e: MediaQueryListEvent) {
+      setIsDark(e.matches);
+    }
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
 
   useEffect(() => {
@@ -102,8 +123,6 @@ export default function Canvas() {
   function handleStageClick(e: any) {
     if (e.target !== e.target.getStage()) return;
 
-    // Any click on blank space while something is selected just deselects —
-    // it does NOT also create a new text box.
     if (selectedId) {
       setSelectedId(null);
       return;
@@ -118,7 +137,7 @@ export default function Canvas() {
     const newObj: TextObject = { id: newId, x: worldX, y: worldY, text: "", fontSize: 20 };
 
     setTextObjects((prev) => [...prev, newObj]);
-    setSelectedId(newId); // <-- select it immediately, so the next click just deselects
+    setSelectedId(newId);
     setEditingId(newId);
     setEditingValue("");
     setEditingScreenPos({ x: pointer.x, y: pointer.y });
@@ -189,7 +208,7 @@ export default function Canvas() {
           <Line
             key={`h-${x}-${y}`}
             points={[x - GRID_MARK_SIZE, y, x + GRID_MARK_SIZE, y]}
-            stroke="#dddddd"
+            stroke={colors.grid}
             strokeWidth={1}
           />
         );
@@ -197,7 +216,7 @@ export default function Canvas() {
           <Line
             key={`v-${x}-${y}`}
             points={[x, y - GRID_MARK_SIZE, x, y + GRID_MARK_SIZE]}
-            stroke="#dddddd"
+            stroke={colors.grid}
             strokeWidth={1}
           />
         );
@@ -209,7 +228,7 @@ export default function Canvas() {
   const editingObj = textObjects.find((o) => o.id === editingId);
 
   return (
-    <div style={{ position: "relative", background: "#ffffff" }}>
+    <div style={{ position: "relative", background: colors.background }}>
       <Stage
         width={dimensions.width}
         height={dimensions.height}
@@ -237,7 +256,7 @@ export default function Canvas() {
                 x={obj.x}
                 y={obj.y}
                 fontSize={obj.fontSize}
-                fill="#171717"
+                fill={colors.text}
                 draggable
                 ref={(node) => {
                   if (node) shapeRefs.current[obj.id] = node;
@@ -293,10 +312,10 @@ export default function Canvas() {
             fontSize: (editingObj?.fontSize ?? 20) * stageScale,
             lineHeight: 1.2,
             fontFamily: "Arial, Helvetica, sans-serif",
-            color: "#171717",
+            color: colors.text,
             background: "transparent",
             border: "none",
-            outline: "1px dashed #999999",
+            outline: `1px dashed ${isDark ? "#666666" : "#999999"}`,
             outlineOffset: "3px",
             padding: 0,
             margin: 0,
