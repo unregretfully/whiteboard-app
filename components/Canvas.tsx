@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Stage, Layer, Line, Text, Transformer } from "react-konva";
+import { Stage, Layer, Text, Transformer } from "react-konva";
 
-const GRID_SIZE = 50;
-const GRID_MARK_SIZE = 4;
+const GRID_SIZE = 50; // base grid spacing, in world units
 const HISTORY_LIMIT = 20;
+const MINIMAP_WIDTH = 180;
+const MINIMAP_HEIGHT = 130;
 
 type TextObject = {
   id: string;
@@ -14,6 +15,8 @@ type TextObject = {
   text: string;
   fontSize: number;
 };
+
+type Mode = "view" | "edit";
 
 export default function Canvas() {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -26,10 +29,11 @@ export default function Canvas() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
   const [editingScreenPos, setEditingScreenPos] = useState({ x: 0, y: 0 });
+  const [editingIsNew, setEditingIsNew] = useState(false);
 
   const [isDark, setIsDark] = useState(false);
+  const [mode, setMode] = useState<Mode>("edit");
 
-  // Undo/redo history — two stacks of past snapshots of textObjects
   const [past, setPast] = useState<TextObject[][]>([]);
   const [future, setFuture] = useState<TextObject[][]>([]);
 
@@ -41,7 +45,33 @@ export default function Canvas() {
     background: isDark ? "#111111" : "#ffffff",
     grid: isDark ? "#333333" : "#dddddd",
     text: isDark ? "#ededed" : "#171717",
+    toolbarBg: isDark ? "#1a1a1a" : "#f5f5f5",
+    toolbarBorder: isDark ? "#333333" : "#dddddd",
+    toolbarActiveBg: isDark ? "#3b82f6" : "#2563eb",
+    minimapBg: isDark ? "#1a1a1a" : "#f0f0f0",
+    minimapDot: isDark ? "#888888" : "#666666",
+    minimapViewport: isDark ? "#3b82f6" : "#2563eb",
   };
+
+  // Keeps on-screen grid spacing within a comfortable range (20-100px)
+  // regardless of zoom level, by doubling/halving the world-space spacing.
+  function getEffectiveGridSize(scale: number) {
+    let size = GRID_SIZE;
+    while (size * scale < 20) size *= 2;
+    while (size * scale > 100) size /= 2;
+    return size;
+  }
+
+  function getGridBackgroundImage(color: string, tileSize: number) {
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${tileSize}' height='${tileSize}'><line x1='${
+      tileSize / 2 - 4
+    }' y1='${tileSize / 2}' x2='${tileSize / 2 + 4}' y2='${
+      tileSize / 2
+    }' stroke='${color}' stroke-width='1'/><line x1='${tileSize / 2}' y1='${
+      tileSize / 2 - 4
+    }' x2='${tileSize / 2}' y2='${tileSize / 2 + 4}' stroke='${color}' stroke-width='1'/></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  }
 
   useEffect(() => {
     function updateSize() {
@@ -80,12 +110,9 @@ export default function Canvas() {
     }
   }, [selectedId, textObjects]);
 
-  // Applies a change to textObjects AND records the pre-change state for undo.
-  // Every real action (create, edit, move, resize, delete) should go through this
-  // instead of calling setTextObjects directly.
   function commitChange(newState: TextObject[]) {
     setPast((prev) => [...prev, textObjects].slice(-HISTORY_LIMIT));
-    setFuture([]); // any new action invalidates the redo history
+    setFuture([]);
     setTextObjects(newState);
   }
 
@@ -109,7 +136,7 @@ export default function Canvas() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (editingId) return; // don't interfere while actively typing
+      if (editingId) return;
 
       const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
       const isRedo =
@@ -166,8 +193,18 @@ export default function Canvas() {
     });
   }
 
+  // Fires continuously while dragging the blank canvas — keeps the CSS grid
+  // in sync with Konva's live movement instead of only updating at drag-end,
+  // which is what caused the "frozen grid" choppiness.
+  function handleStageDragMove(e: any) {
+    if (e.target === e.target.getStage()) {
+      setStagePos({ x: e.target.x(), y: e.target.y() });
+    }
+  }
+
   function handleStageClick(e: any) {
     if (e.target !== e.target.getStage()) return;
+    if (mode !== "edit") return;
 
     if (selectedId) {
       setSelectedId(null);
@@ -182,57 +219,47 @@ export default function Canvas() {
     const newId = crypto.randomUUID();
     const newObj: TextObject = { id: newId, x: worldX, y: worldY, text: "", fontSize: 20 };
 
-    // Not committed to history yet — an empty text box that gets abandoned
-    // shouldn't count as an undoable action. We commit on successful save instead.
     setTextObjects((prev) => [...prev, newObj]);
     setSelectedId(newId);
     setEditingId(newId);
     setEditingValue("");
+    setEditingIsNew(true);
     setEditingScreenPos({ x: pointer.x, y: pointer.y });
   }
 
   function commitEditing() {
     if (!editingId) return;
-
-    const wasNew = !past.some((snapshot) =>
-      snapshot.some((o) => o.id === editingId)
-    ) && !textObjects.some((o) => o.id === editingId && o.text !== "");
-
     const trimmed = editingValue.trim();
 
     if (trimmed === "") {
-      // Discard — remove it without recording history (nothing meaningful happened)
       setTextObjects((prev) => prev.filter((obj) => obj.id !== editingId));
       setSelectedId(null);
-    } else {
-      // Figure out the state as it was before this edit (for history),
-      // by using the current textObjects but with the old text restored temporarily.
-      const stateBeforeThisEdit = textObjects.map((obj) =>
-        obj.id === editingId && wasNew ? null : obj
+    } else if (editingIsNew) {
+      const before = textObjects.filter((o) => o.id !== editingId);
+      const after = textObjects.map((o) =>
+        o.id === editingId ? { ...o, text: editingValue } : o
       );
-      const beforeSnapshot = wasNew
-        ? textObjects.filter((o) => o.id !== editingId)
-        : past.length > 0
-        ? textObjects // fallback; see note below
-        : textObjects;
-
-      const newState = textObjects.map((obj) =>
-        obj.id === editingId ? { ...obj, text: editingValue } : obj
-      );
-
-      setPast((prev) => [...prev, wasNew ? beforeSnapshot : textObjects].slice(-HISTORY_LIMIT));
+      setPast((prev) => [...prev, before].slice(-HISTORY_LIMIT));
       setFuture([]);
-      setTextObjects(newState);
+      setTextObjects(after);
+    } else {
+      const after = textObjects.map((o) =>
+        o.id === editingId ? { ...o, text: editingValue } : o
+      );
+      commitChange(after);
     }
 
     setEditingId(null);
     setEditingValue("");
+    setEditingIsNew(false);
   }
 
   function startEditingExisting(obj: TextObject) {
+    if (mode !== "edit") return;
     setSelectedId(obj.id);
     setEditingId(obj.id);
     setEditingValue(obj.text);
+    setEditingIsNew(false);
     setEditingScreenPos({
       x: obj.x * stageScale + stagePos.x,
       y: obj.y * stageScale + stagePos.y,
@@ -266,42 +293,66 @@ export default function Canvas() {
     );
   }
 
-  function renderGrid() {
-    if (dimensions.width === 0) return null;
+  function switchMode(newMode: Mode) {
+    if (editingId) commitEditing();
+    setSelectedId(null);
+    setMode(newMode);
+  }
 
-    const startX = Math.floor(-stagePos.x / stageScale / GRID_SIZE) * GRID_SIZE;
-    const startY = Math.floor(-stagePos.y / stageScale / GRID_SIZE) * GRID_SIZE;
-    const endX = startX + dimensions.width / stageScale + GRID_SIZE;
-    const endY = startY + dimensions.height / stageScale + GRID_SIZE;
-
-    const marks = [];
-    for (let x = startX; x < endX; x += GRID_SIZE) {
-      for (let y = startY; y < endY; y += GRID_SIZE) {
-        marks.push(
-          <Line
-            key={`h-${x}-${y}`}
-            points={[x - GRID_MARK_SIZE, y, x + GRID_MARK_SIZE, y]}
-            stroke={colors.grid}
-            strokeWidth={1}
-          />
-        );
-        marks.push(
-          <Line
-            key={`v-${x}-${y}`}
-            points={[x, y - GRID_MARK_SIZE, x, y + GRID_MARK_SIZE]}
-            stroke={colors.grid}
-            strokeWidth={1}
-          />
-        );
-      }
-    }
-    return marks;
+  // Recenters the viewport on a given world coordinate — used by minimap clicks
+  function navigateTo(worldX: number, worldY: number) {
+    setStagePos({
+      x: dimensions.width / 2 - worldX * stageScale,
+      y: dimensions.height / 2 - worldY * stageScale,
+    });
   }
 
   const editingObj = textObjects.find((o) => o.id === editingId);
+  const effectiveGridSize = getEffectiveGridSize(stageScale);
 
   return (
-    <div style={{ position: "relative", background: colors.background }}>
+    <div
+      style={{
+        position: "relative",
+        backgroundColor: colors.background,
+        backgroundImage: getGridBackgroundImage(colors.grid, effectiveGridSize),
+        backgroundSize: `${effectiveGridSize * stageScale}px ${
+          effectiveGridSize * stageScale
+        }px`,
+        backgroundPosition: `${stagePos.x}px ${stagePos.y}px`,
+      }}
+    >
+      {/* Toolbar */}
+      <div
+        style={{
+          position: "absolute",
+          top: 16,
+          left: 16,
+          zIndex: 10,
+          display: "flex",
+          gap: 6,
+          background: colors.toolbarBg,
+          border: `1px solid ${colors.toolbarBorder}`,
+          borderRadius: 8,
+          padding: 6,
+        }}
+      >
+        <ToolbarButton
+          label="View"
+          active={mode === "view"}
+          onClick={() => switchMode("view")}
+          colors={colors}
+        />
+        <ToolbarButton
+          label="Edit Text"
+          active={mode === "edit"}
+          onClick={() => switchMode("edit")}
+          colors={colors}
+        />
+        <ToolbarButton label="Line" disabled title="Coming soon" colors={colors} />
+        <ToolbarButton label="Shape" disabled title="Coming soon" colors={colors} />
+      </div>
+
       <Stage
         width={dimensions.width}
         height={dimensions.height}
@@ -312,13 +363,9 @@ export default function Canvas() {
         scaleY={stageScale}
         onWheel={handleWheel}
         onClick={handleStageClick}
-        onDragEnd={(e) => {
-          if (e.target === e.target.getStage()) {
-            setStagePos({ x: e.target.x(), y: e.target.y() });
-          }
-        }}
+        onDragMove={handleStageDragMove}
+        onDragEnd={handleStageDragMove}
       >
-        <Layer>{renderGrid()}</Layer>
         <Layer>
           {textObjects
             .filter((obj) => obj.id !== editingId)
@@ -330,11 +377,12 @@ export default function Canvas() {
                 y={obj.y}
                 fontSize={obj.fontSize}
                 fill={colors.text}
-                draggable
+                draggable={mode === "edit"}
                 ref={(node) => {
                   if (node) shapeRefs.current[obj.id] = node;
                 }}
                 onClick={(e) => {
+                  if (mode !== "edit") return;
                   e.cancelBubble = true;
                   setSelectedId(obj.id);
                 }}
@@ -346,15 +394,17 @@ export default function Canvas() {
                 onTransformEnd={() => handleTransformEnd(obj)}
               />
             ))}
-          <Transformer
-            ref={trRef}
-            enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
-            rotateEnabled={false}
-            boundBoxFunc={(oldBox, newBox) => {
-              if (newBox.width < 20) return oldBox;
-              return newBox;
-            }}
-          />
+          {mode === "edit" && (
+            <Transformer
+              ref={trRef}
+              enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+              rotateEnabled={false}
+              boundBoxFunc={(oldBox, newBox) => {
+                if (newBox.width < 20) return oldBox;
+                return newBox;
+              }}
+            />
+          )}
         </Layer>
       </Stage>
 
@@ -390,6 +440,171 @@ export default function Canvas() {
           }}
         />
       )}
+
+      <MiniMap
+        textObjects={textObjects}
+        stagePos={stagePos}
+        stageScale={stageScale}
+        dimensions={dimensions}
+        colors={colors}
+        onNavigate={navigateTo}
+      />
+    </div>
+  );
+}
+
+function ToolbarButton({
+  label,
+  active,
+  disabled,
+  title,
+  onClick,
+  colors,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick?: () => void;
+  colors: any;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        padding: "6px 12px",
+        borderRadius: 6,
+        border: "none",
+        fontSize: 14,
+        fontFamily: "Arial, Helvetica, sans-serif",
+        cursor: disabled ? "not-allowed" : "pointer",
+        background: active ? colors.toolbarActiveBg : "transparent",
+        color: active ? "#ffffff" : disabled ? "#999999" : colors.text,
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function MiniMap({
+  textObjects,
+  stagePos,
+  stageScale,
+  dimensions,
+  colors,
+  onNavigate,
+}: {
+  textObjects: TextObject[];
+  stagePos: { x: number; y: number };
+  stageScale: number;
+  dimensions: { width: number; height: number };
+  colors: any;
+  onNavigate: (worldX: number, worldY: number) => void;
+}) {
+  if (dimensions.width === 0) return null;
+
+  // Current viewport, in world coordinates
+  const viewport = {
+    left: -stagePos.x / stageScale,
+    top: -stagePos.y / stageScale,
+    right: (-stagePos.x + dimensions.width) / stageScale,
+    bottom: (-stagePos.y + dimensions.height) / stageScale,
+  };
+
+  // Rough bounding box for each text object (approximated — we don't have
+  // exact rendered text width without measuring, so this is a fair estimate)
+  const objectBounds = textObjects.map((obj) => ({
+    left: obj.x,
+    top: obj.y,
+    right: obj.x + Math.max(60, obj.text.length * obj.fontSize * 0.55),
+    bottom: obj.y + obj.fontSize * 1.4,
+  }));
+
+  // Union of viewport + all objects, so the viewport indicator is always
+  // visible on the minimap even if you've panned away from your notes
+  const allLefts = [viewport.left, ...objectBounds.map((b) => b.left)];
+  const allTops = [viewport.top, ...objectBounds.map((b) => b.top)];
+  const allRights = [viewport.right, ...objectBounds.map((b) => b.right)];
+  const allBottoms = [viewport.bottom, ...objectBounds.map((b) => b.bottom)];
+
+  const PADDING = 100; // world units of breathing room
+  const boundsMinX = Math.min(...allLefts) - PADDING;
+  const boundsMinY = Math.min(...allTops) - PADDING;
+  const boundsMaxX = Math.max(...allRights) + PADDING;
+  const boundsMaxY = Math.max(...allBottoms) + PADDING;
+
+  const boundsWidth = Math.max(1, boundsMaxX - boundsMinX);
+  const boundsHeight = Math.max(1, boundsMaxY - boundsMinY);
+
+  const mapScale = Math.min(MINIMAP_WIDTH / boundsWidth, MINIMAP_HEIGHT / boundsHeight);
+
+  const offsetX = (MINIMAP_WIDTH - boundsWidth * mapScale) / 2;
+  const offsetY = (MINIMAP_HEIGHT - boundsHeight * mapScale) / 2;
+
+  function toMapX(worldX: number) {
+    return offsetX + (worldX - boundsMinX) * mapScale;
+  }
+  function toMapY(worldY: number) {
+    return offsetY + (worldY - boundsMinY) * mapScale;
+  }
+
+  function handleMinimapClick(e: React.MouseEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    const worldX = boundsMinX + (clickX - offsetX) / mapScale;
+    const worldY = boundsMinY + (clickY - offsetY) / mapScale;
+    onNavigate(worldX, worldY);
+  }
+
+  return (
+    <div
+      onClick={handleMinimapClick}
+      style={{
+        position: "absolute",
+        bottom: 16,
+        right: 16,
+        width: MINIMAP_WIDTH,
+        height: MINIMAP_HEIGHT,
+        background: colors.minimapBg,
+        border: `1px solid ${colors.toolbarBorder}`,
+        borderRadius: 8,
+        cursor: "pointer",
+        overflow: "hidden",
+        zIndex: 10,
+      }}
+    >
+      {objectBounds.map((b, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            left: toMapX(b.left),
+            top: toMapY(b.top),
+            width: 4,
+            height: 4,
+            borderRadius: 2,
+            background: colors.minimapDot,
+          }}
+        />
+      ))}
+      <div
+        style={{
+          position: "absolute",
+          left: toMapX(viewport.left),
+          top: toMapY(viewport.top),
+          width: Math.max(2, (viewport.right - viewport.left) * mapScale),
+          height: Math.max(2, (viewport.bottom - viewport.top) * mapScale),
+          border: `1.5px solid ${colors.minimapViewport}`,
+          borderRadius: 2,
+          pointerEvents: "none",
+        }}
+      />
     </div>
   );
 }
