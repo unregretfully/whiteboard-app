@@ -1,17 +1,35 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Stage, Layer, Line } from "react-konva";
+import { useState, useEffect, useRef } from "react";
+import { Stage, Layer, Line, Text, Transformer } from "react-konva";
 
-const GRID_SIZE = 50;      // spacing between grid marks, in "world" units
-const GRID_MARK_SIZE = 4;  // half-length of each little plus sign
+const GRID_SIZE = 50;
+const GRID_MARK_SIZE = 4;
+
+type TextObject = {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  fontSize: number;
+};
 
 export default function Canvas() {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [stageScale, setStageScale] = useState(1);
 
-  // Fill the whole browser window, and keep it filled if the window resizes
+  const [textObjects, setTextObjects] = useState<TextObject[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+  const [editingScreenPos, setEditingScreenPos] = useState({ x: 0, y: 0 });
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const trRef = useRef<any>(null);
+  const shapeRefs = useRef<Record<string, any>>({});
+
   useEffect(() => {
     function updateSize() {
       setDimensions({ width: window.innerWidth, height: window.innerHeight });
@@ -21,7 +39,43 @@ export default function Canvas() {
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  // Zoom in/out, centered on wherever the mouse pointer is
+  useEffect(() => {
+    if (editingId && textareaRef.current) {
+      textareaRef.current.focus();
+      autosizeTextarea(textareaRef.current);
+    }
+  }, [editingId]);
+
+  useEffect(() => {
+    if (trRef.current) {
+      if (selectedId && shapeRefs.current[selectedId]) {
+        trRef.current.nodes([shapeRefs.current[selectedId]]);
+      } else {
+        trRef.current.nodes([]);
+      }
+      trRef.current.getLayer()?.batchDraw();
+    }
+  }, [selectedId, textObjects]);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (editingId) return;
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
+        setTextObjects((prev) => prev.filter((o) => o.id !== selectedId));
+        setSelectedId(null);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedId, editingId]);
+
+  function autosizeTextarea(el: HTMLTextAreaElement) {
+    el.style.height = "auto";
+    el.style.width = "auto";
+    el.style.height = el.scrollHeight + "px";
+    el.style.width = Math.max(20, el.scrollWidth + 4) + "px";
+  }
+
   function handleWheel(e: any) {
     e.evt.preventDefault();
     const stage = e.target.getStage();
@@ -36,7 +90,7 @@ export default function Canvas() {
     const scaleBy = 1.05;
     const direction = e.evt.deltaY > 0 ? -1 : 1;
     const newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
-    const clampedScale = Math.max(0.1, Math.min(5, newScale)); // limit zoom range
+    const clampedScale = Math.max(0.1, Math.min(5, newScale));
 
     setStageScale(clampedScale);
     setStagePos({
@@ -45,7 +99,81 @@ export default function Canvas() {
     });
   }
 
-  // Draw plus-sign grid marks, but only within the currently visible area
+  function handleStageClick(e: any) {
+    if (e.target !== e.target.getStage()) return;
+
+    // Any click on blank space while something is selected just deselects —
+    // it does NOT also create a new text box.
+    if (selectedId) {
+      setSelectedId(null);
+      return;
+    }
+
+    const stage = e.target.getStage();
+    const pointer = stage.getPointerPosition();
+    const worldX = (pointer.x - stagePos.x) / stageScale;
+    const worldY = (pointer.y - stagePos.y) / stageScale;
+
+    const newId = crypto.randomUUID();
+    const newObj: TextObject = { id: newId, x: worldX, y: worldY, text: "", fontSize: 20 };
+
+    setTextObjects((prev) => [...prev, newObj]);
+    setSelectedId(newId); // <-- select it immediately, so the next click just deselects
+    setEditingId(newId);
+    setEditingValue("");
+    setEditingScreenPos({ x: pointer.x, y: pointer.y });
+  }
+
+  function commitEditing() {
+    if (!editingId) return;
+
+    setTextObjects((prev) => {
+      const trimmed = editingValue.trim();
+      if (trimmed === "") {
+        return prev.filter((obj) => obj.id !== editingId);
+      }
+      return prev.map((obj) =>
+        obj.id === editingId ? { ...obj, text: editingValue } : obj
+      );
+    });
+
+    if (editingValue.trim() === "") {
+      setSelectedId(null);
+    }
+
+    setEditingId(null);
+    setEditingValue("");
+  }
+
+  function startEditingExisting(obj: TextObject) {
+    setSelectedId(obj.id);
+    setEditingId(obj.id);
+    setEditingValue(obj.text);
+    setEditingScreenPos({
+      x: obj.x * stageScale + stagePos.x,
+      y: obj.y * stageScale + stagePos.y,
+    });
+  }
+
+  function handleTransformEnd(obj: TextObject) {
+    const node = shapeRefs.current[obj.id];
+    if (!node) return;
+
+    const scaleX = node.scaleX();
+    node.scaleX(1);
+    node.scaleY(1);
+
+    const newFontSize = Math.max(8, Math.round(obj.fontSize * scaleX));
+
+    setTextObjects((prev) =>
+      prev.map((o) =>
+        o.id === obj.id
+          ? { ...o, fontSize: newFontSize, x: node.x(), y: node.y() }
+          : o
+      )
+    );
+  }
+
   function renderGrid() {
     if (dimensions.width === 0) return null;
 
@@ -78,21 +206,106 @@ export default function Canvas() {
     return marks;
   }
 
+  const editingObj = textObjects.find((o) => o.id === editingId);
+
   return (
-    <Stage
-      width={dimensions.width}
-      height={dimensions.height}
-      draggable
-      x={stagePos.x}
-      y={stagePos.y}
-      scaleX={stageScale}
-      scaleY={stageScale}
-      onWheel={handleWheel}
-      onDragEnd={(e) => {
-        setStagePos({ x: e.target.x(), y: e.target.y() });
-      }}
-    >
-      <Layer>{renderGrid()}</Layer>
-    </Stage>
+    <div style={{ position: "relative" }}>
+      <Stage
+        width={dimensions.width}
+        height={dimensions.height}
+        draggable
+        x={stagePos.x}
+        y={stagePos.y}
+        scaleX={stageScale}
+        scaleY={stageScale}
+        onWheel={handleWheel}
+        onClick={handleStageClick}
+        onDragEnd={(e) => {
+          if (e.target === e.target.getStage()) {
+            setStagePos({ x: e.target.x(), y: e.target.y() });
+          }
+        }}
+      >
+        <Layer>{renderGrid()}</Layer>
+        <Layer>
+          {textObjects
+            .filter((obj) => obj.id !== editingId)
+            .map((obj) => (
+              <Text
+                key={obj.id}
+                text={obj.text}
+                x={obj.x}
+                y={obj.y}
+                fontSize={obj.fontSize}
+                fill="#171717"
+                draggable
+                ref={(node) => {
+                  if (node) shapeRefs.current[obj.id] = node;
+                }}
+                onClick={(e) => {
+                  e.cancelBubble = true;
+                  setSelectedId(obj.id);
+                }}
+                onDblClick={(e) => {
+                  e.cancelBubble = true;
+                  startEditingExisting(obj);
+                }}
+                onDragEnd={(e) => {
+                  setTextObjects((prev) =>
+                    prev.map((o) =>
+                      o.id === obj.id
+                        ? { ...o, x: e.target.x(), y: e.target.y() }
+                        : o
+                    )
+                  );
+                }}
+                onTransformEnd={() => handleTransformEnd(obj)}
+              />
+            ))}
+          <Transformer
+            ref={trRef}
+            enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+            rotateEnabled={false}
+            boundBoxFunc={(oldBox, newBox) => {
+              if (newBox.width < 20) return oldBox;
+              return newBox;
+            }}
+          />
+        </Layer>
+      </Stage>
+
+      {editingId && (
+        <textarea
+          ref={textareaRef}
+          value={editingValue}
+          onChange={(e) => {
+            setEditingValue(e.target.value);
+            autosizeTextarea(e.target);
+          }}
+          onBlur={commitEditing}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") commitEditing();
+          }}
+          style={{
+            position: "absolute",
+            top: editingScreenPos.y,
+            left: editingScreenPos.x,
+            fontSize: (editingObj?.fontSize ?? 20) * stageScale,
+            lineHeight: 1.2,
+            fontFamily: "Arial, Helvetica, sans-serif",
+            color: "#171717",
+            background: "transparent",
+            border: "none",
+            outline: "1px dashed #999999",
+            outlineOffset: "3px",
+            padding: 0,
+            margin: 0,
+            resize: "none",
+            overflow: "hidden",
+            whiteSpace: "pre",
+          }}
+        />
+      )}
+    </div>
   );
 }
