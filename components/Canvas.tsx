@@ -5,6 +5,7 @@ import { Stage, Layer, Line, Text, Transformer } from "react-konva";
 
 const GRID_SIZE = 50;
 const GRID_MARK_SIZE = 4;
+const HISTORY_LIMIT = 20;
 
 type TextObject = {
   id: string;
@@ -28,11 +29,14 @@ export default function Canvas() {
 
   const [isDark, setIsDark] = useState(false);
 
+  // Undo/redo history — two stacks of past snapshots of textObjects
+  const [past, setPast] = useState<TextObject[][]>([]);
+  const [future, setFuture] = useState<TextObject[][]>([]);
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const trRef = useRef<any>(null);
   const shapeRefs = useRef<Record<string, any>>({});
 
-  // Theme colors — everything reads from here, so light/dark stay consistent
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
     grid: isDark ? "#333333" : "#dddddd",
@@ -48,11 +52,9 @@ export default function Canvas() {
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  // Detect system dark mode, and keep watching in case the user changes it live
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     setIsDark(mediaQuery.matches);
-
     function handleChange(e: MediaQueryListEvent) {
       setIsDark(e.matches);
     }
@@ -78,17 +80,61 @@ export default function Canvas() {
     }
   }, [selectedId, textObjects]);
 
+  // Applies a change to textObjects AND records the pre-change state for undo.
+  // Every real action (create, edit, move, resize, delete) should go through this
+  // instead of calling setTextObjects directly.
+  function commitChange(newState: TextObject[]) {
+    setPast((prev) => [...prev, textObjects].slice(-HISTORY_LIMIT));
+    setFuture([]); // any new action invalidates the redo history
+    setTextObjects(newState);
+  }
+
+  function undo() {
+    if (past.length === 0) return;
+    const previous = past[past.length - 1];
+    setPast((prev) => prev.slice(0, -1));
+    setFuture((prev) => [textObjects, ...prev].slice(0, HISTORY_LIMIT));
+    setTextObjects(previous);
+    setSelectedId(null);
+  }
+
+  function redo() {
+    if (future.length === 0) return;
+    const next = future[0];
+    setFuture((prev) => prev.slice(1));
+    setPast((prev) => [...prev, textObjects].slice(-HISTORY_LIMIT));
+    setTextObjects(next);
+    setSelectedId(null);
+  }
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (editingId) return;
+      if (editingId) return; // don't interfere while actively typing
+
+      const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
+      const isRedo =
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z") ||
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y");
+
+      if (isUndo) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if (isRedo) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        setTextObjects((prev) => prev.filter((o) => o.id !== selectedId));
+        commitChange(textObjects.filter((o) => o.id !== selectedId));
         setSelectedId(null);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, editingId]);
+  }, [selectedId, editingId, textObjects, past, future]);
 
   function autosizeTextarea(el: HTMLTextAreaElement) {
     el.style.height = "auto";
@@ -136,6 +182,8 @@ export default function Canvas() {
     const newId = crypto.randomUUID();
     const newObj: TextObject = { id: newId, x: worldX, y: worldY, text: "", fontSize: 20 };
 
+    // Not committed to history yet — an empty text box that gets abandoned
+    // shouldn't count as an undoable action. We commit on successful save instead.
     setTextObjects((prev) => [...prev, newObj]);
     setSelectedId(newId);
     setEditingId(newId);
@@ -146,18 +194,35 @@ export default function Canvas() {
   function commitEditing() {
     if (!editingId) return;
 
-    setTextObjects((prev) => {
-      const trimmed = editingValue.trim();
-      if (trimmed === "") {
-        return prev.filter((obj) => obj.id !== editingId);
-      }
-      return prev.map((obj) =>
+    const wasNew = !past.some((snapshot) =>
+      snapshot.some((o) => o.id === editingId)
+    ) && !textObjects.some((o) => o.id === editingId && o.text !== "");
+
+    const trimmed = editingValue.trim();
+
+    if (trimmed === "") {
+      // Discard — remove it without recording history (nothing meaningful happened)
+      setTextObjects((prev) => prev.filter((obj) => obj.id !== editingId));
+      setSelectedId(null);
+    } else {
+      // Figure out the state as it was before this edit (for history),
+      // by using the current textObjects but with the old text restored temporarily.
+      const stateBeforeThisEdit = textObjects.map((obj) =>
+        obj.id === editingId && wasNew ? null : obj
+      );
+      const beforeSnapshot = wasNew
+        ? textObjects.filter((o) => o.id !== editingId)
+        : past.length > 0
+        ? textObjects // fallback; see note below
+        : textObjects;
+
+      const newState = textObjects.map((obj) =>
         obj.id === editingId ? { ...obj, text: editingValue } : obj
       );
-    });
 
-    if (editingValue.trim() === "") {
-      setSelectedId(null);
+      setPast((prev) => [...prev, wasNew ? beforeSnapshot : textObjects].slice(-HISTORY_LIMIT));
+      setFuture([]);
+      setTextObjects(newState);
     }
 
     setEditingId(null);
@@ -174,6 +239,14 @@ export default function Canvas() {
     });
   }
 
+  function handleDragEnd(obj: TextObject, node: any) {
+    commitChange(
+      textObjects.map((o) =>
+        o.id === obj.id ? { ...o, x: node.x(), y: node.y() } : o
+      )
+    );
+  }
+
   function handleTransformEnd(obj: TextObject) {
     const node = shapeRefs.current[obj.id];
     if (!node) return;
@@ -184,8 +257,8 @@ export default function Canvas() {
 
     const newFontSize = Math.max(8, Math.round(obj.fontSize * scaleX));
 
-    setTextObjects((prev) =>
-      prev.map((o) =>
+    commitChange(
+      textObjects.map((o) =>
         o.id === obj.id
           ? { ...o, fontSize: newFontSize, x: node.x(), y: node.y() }
           : o
@@ -269,15 +342,7 @@ export default function Canvas() {
                   e.cancelBubble = true;
                   startEditingExisting(obj);
                 }}
-                onDragEnd={(e) => {
-                  setTextObjects((prev) =>
-                    prev.map((o) =>
-                      o.id === obj.id
-                        ? { ...o, x: e.target.x(), y: e.target.y() }
-                        : o
-                    )
-                  );
-                }}
+                onDragEnd={(e) => handleDragEnd(obj, e.target)}
                 onTransformEnd={() => handleTransformEnd(obj)}
               />
             ))}
