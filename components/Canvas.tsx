@@ -209,7 +209,7 @@ export default function Canvas() {
   const editingObj = textObjects.find((o) => o.id === editingId);
 
   return (
-    <div style={{ position: "relative" }}>
+    <div style={{ position: "relative", background: "#ffffff" }}>
       <Stage
         width={dimensions.width}
         height={dimensions.height}
