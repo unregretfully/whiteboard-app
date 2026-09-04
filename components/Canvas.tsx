@@ -24,6 +24,9 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const [stageScale, setStageScale] = useState(1);
   const [isLoaded, setIsLoaded] = useState(false);
 
+  const [minimapActive, setMinimapActive] = useState(true);
+  const minimapTimeoutRef = useRef<any>(null);
+
   const [objects, setObjects] = useState<CanvasObject[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -80,6 +83,15 @@ export default function Canvas({ boardId }: { boardId: string }) {
     window.addEventListener("resize", updateSize);
     return () => window.removeEventListener("resize", updateSize);
   }, []);
+
+  // Minimap fully visible while actively panning/zooming, then dims after
+  // a brief pause — matches how most design tools handle minimap visibility.
+  useEffect(() => {
+    setMinimapActive(true);
+    if (minimapTimeoutRef.current) clearTimeout(minimapTimeoutRef.current);
+    minimapTimeoutRef.current = setTimeout(() => setMinimapActive(false), 1200);
+    return () => clearTimeout(minimapTimeoutRef.current);
+  }, [stagePos, stageScale]);
 
   // Load this board's saved content once, when the page first opens
   useEffect(() => {
@@ -778,6 +790,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
         dimensions={dimensions}
         colors={colors}
         onNavigate={navigateTo}
+        active={minimapActive}
       />
     </div>
   );
@@ -858,6 +871,7 @@ function MiniMap({
   dimensions,
   colors,
   onNavigate,
+  active,
 }: {
   objects: CanvasObject[];
   stagePos: { x: number; y: number };
@@ -865,7 +879,9 @@ function MiniMap({
   dimensions: { width: number; height: number };
   colors: any;
   onNavigate: (worldX: number, worldY: number) => void;
+  active: boolean;
 }) {
+  const [hovered, setHovered] = useState(false);
   if (dimensions.width === 0) return null;
 
   const viewport = {
@@ -931,9 +947,13 @@ function MiniMap({
     onNavigate(worldX, worldY);
   }
 
+  const isVisible = active || hovered;
+
   return (
     <div
       onClick={handleMinimapClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         position: "absolute",
         bottom: 16,
@@ -946,6 +966,9 @@ function MiniMap({
         cursor: "pointer",
         overflow: "hidden",
         zIndex: 10,
+        opacity: isVisible ? 1 : 0.15,
+        transform: isVisible ? "scale(1)" : "scale(0.92)",
+        transition: "opacity 0.25s ease, transform 0.25s ease",
       }}
     >
       {objectBounds.map((b, i) => (
