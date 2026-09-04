@@ -172,7 +172,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (editingId) return;
+      if (editingId) return; // never intercept keys while actively typing
 
       const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
       const isRedo =
@@ -193,11 +193,48 @@ export default function Canvas({ boardId }: { boardId: string }) {
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         commitChange(objects.filter((o) => o.id !== selectedId));
         setSelectedId(null);
+        return;
+      }
+
+      // Tool-switching shortcuts — only plain letter presses, no modifier keys,
+      // so Ctrl+V (paste), Cmd+T (new browser tab), etc. still work normally.
+      const noModifiers = !e.ctrlKey && !e.metaKey && !e.altKey;
+
+      if (noModifiers) {
+        const key = e.key.toLowerCase();
+        if (key === "v") {
+          switchMode("view");
+          return;
+        }
+        if (key === "s") {
+          switchMode("select");
+          return;
+        }
+        if (key === "t") {
+          switchMode("text");
+          return;
+        }
+        if (key === "l") {
+          switchMode("line");
+          return;
+        }
+        if (key === "r") {
+          switchMode("shape");
+          return;
+        }
+        if (e.key === "Escape") {
+          if (selectedId) {
+            setSelectedId(null);
+          } else {
+            switchMode("select");
+          }
+          return;
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, editingId, objects, past, future]);
+  }, [selectedId, editingId, objects, past, future, mode]);
 
   function autosizeTextarea(el: HTMLTextAreaElement) {
     el.style.height = "auto";
@@ -756,11 +793,11 @@ function Toolbar({
   colors: any;
 }) {
   const tools: { mode: Mode; label: string; Icon: any }[] = [
-    { mode: "view", label: "View", Icon: Eye },
-    { mode: "select", label: "Select", Icon: MousePointer2 },
-    { mode: "text", label: "Text", Icon: Type },
-    { mode: "line", label: "Line", Icon: Slash },
-    { mode: "shape", label: "Rectangle", Icon: Square },
+    { mode: "view", label: "View (V)", Icon: Eye },
+    { mode: "select", label: "Select (S)", Icon: MousePointer2 },
+    { mode: "text", label: "Text (T)", Icon: Type },
+    { mode: "line", label: "Line (L)", Icon: Slash },
+    { mode: "shape", label: "Rectangle (R)", Icon: Square },
   ];
 
   return (
