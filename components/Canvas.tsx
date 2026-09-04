@@ -387,7 +387,7 @@ export default function Canvas() {
     node.y(0);
     commitChange(
       objects.map((o) =>
-        o.id === obj.id
+        o.type === "line" && o.id === obj.id
           ? { ...o, x1: o.x1 + dx, y1: o.y1 + dy, x2: o.x2 + dx, y2: o.y2 + dy }
           : o
       )
@@ -399,7 +399,7 @@ export default function Canvas() {
     const world = { x: node.x(), y: node.y() };
     commitChange(
       objects.map((o) =>
-        o.id === obj.id
+        o.type === "line" && o.id === obj.id
           ? which === "1"
             ? { ...o, x1: world.x, y1: world.y }
             : { ...o, x2: world.x, y2: world.y }
