@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Stage, Layer, Text, Rect, Line, Circle, Group, Transformer } from "react-konva";
 import { MousePointer2, Eye, Type, Square, Slash } from "lucide-react";
+import { supabase } from "../lib/supabaseClient";
 
 const GRID_SIZE = 50;
 const HISTORY_LIMIT = 20;
@@ -17,10 +18,11 @@ type CanvasObject = TextObj | ShapeObj | LineObj;
 
 type Mode = "view" | "select" | "text" | "line" | "shape";
 
-export default function Canvas() {
+export default function Canvas({ boardId }: { boardId: string }) {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [stageScale, setStageScale] = useState(1);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   const [objects, setObjects] = useState<CanvasObject[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -78,6 +80,40 @@ export default function Canvas() {
     window.addEventListener("resize", updateSize);
     return () => window.removeEventListener("resize", updateSize);
   }, []);
+
+  // Load this board's saved content once, when the page first opens
+  useEffect(() => {
+    async function loadBoard() {
+      const { data, error } = await supabase
+        .from("boards")
+        .select("data")
+        .eq("id", boardId)
+        .single();
+      if (error) console.error("Load failed:", error);
+
+      if (data) {
+        setObjects(data.data as CanvasObject[]);
+      }
+      setIsLoaded(true);
+    }
+    loadBoard();
+  }, [boardId]);
+
+  // Autosave — waits 800ms after your last change before actually saving,
+  // so rapid edits don't spam the database with a request per keystroke
+  useEffect(() => {
+    if (!isLoaded) return; // don't save until the initial load has finished
+
+    const timeout = setTimeout(async () => {
+      const { error } = await supabase
+        .from("boards")
+        .update({ data: objects, updated_at: new Date().toISOString() })
+        .eq("id", boardId);
+      if (error) console.error("Save failed:", error);
+    }, 800);
+
+    return () => clearTimeout(timeout);
+  }, [objects, isLoaded, boardId]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
