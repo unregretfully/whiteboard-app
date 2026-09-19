@@ -27,7 +27,6 @@ export default function Home() {
     buttonBg: isDark ? "#e5e5e5" : "#2c2c2c",
     buttonText: isDark ? "#111111" : "#ffffff",
     disabledBorder: isDark ? "#333333" : "#dddddd",
-    navBarBg: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)",
     navBarBorder: isDark ? "#2a2a2a" : "#ececec",
   };
 
@@ -57,7 +56,6 @@ export default function Home() {
       <InteractiveGrid gridColor={colors.grid} />
 
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
-        {/* Nav bar */}
         <nav
           style={{
             display: "flex",
@@ -80,7 +78,6 @@ export default function Home() {
           </div>
         </nav>
 
-        {/* Hero */}
         <div
           style={{
             flex: 1,
@@ -116,7 +113,6 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Feature labels */}
         <div
           style={{
             display: "flex",
@@ -137,14 +133,11 @@ export default function Home() {
   );
 }
 
-// Renders a full-screen grid of plus-marks on a <canvas>, redrawn every frame.
-// Marks grow larger the closer they are to the mouse, with a slight ease on
-// the tracked mouse position so the effect feels smooth rather than snappy.
 function InteractiveGrid({ gridColor }: { gridColor: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const targetMouse = useRef({ x: -1000, y: -1000 });
   const displayMouse = useRef({ x: -1000, y: -1000 });
-  const rafRef = useRef<number>();
+  const rafRef = useRef<number>(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -153,6 +146,7 @@ function InteractiveGrid({ gridColor }: { gridColor: string }) {
     if (!ctx) return;
 
     function resize() {
+      if (!canvas) return;
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
     }
@@ -167,18 +161,18 @@ function InteractiveGrid({ gridColor }: { gridColor: string }) {
     const GRID_SIZE = 60;
     const BASE_SIZE = 4;
     const MAX_SIZE = 12;
-    const INFLUENCE_RADIUS = 320; // bigger reach around the cursor
-    const DRIFT_SPEED = 6; // pixels per second the whole grid slowly drifts
+    const INFLUENCE_RADIUS = 320;
+    const DRIFT_SPEED = 6;
 
     const startTime = performance.now();
 
     function draw(now: number) {
+      if (!canvas || !ctx) return;
+
       displayMouse.current.x += (targetMouse.current.x - displayMouse.current.x) * 0.15;
       displayMouse.current.y += (targetMouse.current.y - displayMouse.current.y) * 0.15;
       const { x: mx, y: my } = displayMouse.current;
 
-      // Slow continuous drift, independent of the mouse — wraps every GRID_SIZE
-      // so it loops seamlessly forever without ever resetting visibly.
       const elapsedSeconds = (now - startTime) / 1000;
       const drift = ((elapsedSeconds * DRIFT_SPEED) % GRID_SIZE + GRID_SIZE) % GRID_SIZE;
 
@@ -208,12 +202,13 @@ function InteractiveGrid({ gridColor }: { gridColor: string }) {
 
       rafRef.current = requestAnimationFrame(draw);
     }
+
     rafRef.current = requestAnimationFrame(draw);
 
     return () => {
       window.removeEventListener("resize", resize);
       window.removeEventListener("mousemove", handleMouseMove);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      cancelAnimationFrame(rafRef.current);
     };
   }, [gridColor]);
 
@@ -224,7 +219,6 @@ function InteractiveGrid({ gridColor }: { gridColor: string }) {
     />
   );
 }
-
 
 function NavButton({ label, colors, filled }: { label: string; colors: any; filled?: boolean }) {
   return (
