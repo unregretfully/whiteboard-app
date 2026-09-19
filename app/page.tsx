@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
 
@@ -21,19 +21,15 @@ export default function Home() {
 
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
-    grid: isDark ? "#2a2a2a" : "#eeeeee",
+    grid: isDark ? "#2a2a2a" : "#eaeaea",
     text: isDark ? "#ededed" : "#171717",
     subtext: isDark ? "#999999" : "#666666",
     buttonBg: isDark ? "#e5e5e5" : "#2c2c2c",
     buttonText: isDark ? "#111111" : "#ffffff",
     disabledBorder: isDark ? "#333333" : "#dddddd",
+    navBarBg: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)",
+    navBarBorder: isDark ? "#2a2a2a" : "#ececec",
   };
-
-  function getGridBackgroundImage(color: string) {
-    const tileSize = 60;
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${tileSize}' height='${tileSize}'><line x1='${tileSize / 2 - 4}' y1='${tileSize / 2}' x2='${tileSize / 2 + 4}' y2='${tileSize / 2}' stroke='${color}' stroke-width='1'/><line x1='${tileSize / 2}' y1='${tileSize / 2 - 4}' x2='${tileSize / 2}' y2='${tileSize / 2 + 4}' stroke='${color}' stroke-width='1'/></svg>`;
-    return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-  }
 
   async function handleNewPage() {
     setCreating(true);
@@ -51,100 +47,186 @@ export default function Home() {
   return (
     <div
       style={{
+        position: "relative",
         minHeight: "100vh",
         backgroundColor: colors.background,
-        backgroundImage: getGridBackgroundImage(colors.grid),
-        backgroundSize: "60px 60px",
-        animation: "gridDrift 25s linear infinite",
-        display: "flex",
-        flexDirection: "column",
+        overflow: "hidden",
         fontFamily: "Arial, Helvetica, sans-serif",
       }}
     >
-      {/* Nav */}
-      <nav
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "20px 32px",
-        }}
-      >
-        <div style={{ fontSize: 20, fontWeight: 700, color: colors.text }}>
-          Notebooook
-        </div>
-        <div style={{ display: "flex", gap: 12 }}>
-          <NavButton label="Log in" colors={colors} />
-          <NavButton label="Sign up" colors={colors} filled />
-        </div>
-      </nav>
+      <InteractiveGrid gridColor={colors.grid} />
 
-      {/* Hero */}
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-          padding: "40px 20px",
-        }}
-      >
-        <h1 style={{ fontSize: 40, fontWeight: 700, color: colors.text, margin: 0 }}>
-          Put anything, anywhere.
-        </h1>
-        <p style={{ fontSize: 16, color: colors.subtext, marginTop: 12, maxWidth: 420 }}>
-          A clean, infinite canvas for notes, ideas, and anything in between.
-        </p>
-
-        <button
-          onClick={handleNewPage}
-          disabled={creating}
+      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+        {/* Nav bar */}
+        <nav
           style={{
-            marginTop: 32,
-            padding: "14px 32px",
-            fontSize: 16,
-            fontWeight: 600,
-            border: "none",
-            borderRadius: 10,
-            background: colors.buttonBg,
-            color: colors.buttonText,
-            cursor: creating ? "default" : "pointer",
-            opacity: creating ? 0.6 : 1,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "16px 28px",
+            background: colors.background,
+            borderBottom: `1px solid ${colors.navBarBorder}`,
+            width: "100%",
           }}
         >
-          {creating ? "Creating..." : "New Page"}
-        </button>
-      </div>
+          <img
+            src="/logo.png"
+            alt="Notebooook"
+            style={{ height: 26, filter: isDark ? "invert(1)" : "none" }}
+          />
+          <div style={{ display: "flex", gap: 10 }}>
+            <NavButton label="Log in" colors={colors} />
+            <NavButton label="Sign up" colors={colors} filled />
+          </div>
+        </nav>
 
-      {/* Explainer */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          gap: 48,
-          flexWrap: "wrap",
-          padding: "40px 20px 60px",
-        }}
-      >
-        <Feature title="Write" desc="Put text anywhere on an endless canvas." colors={colors} />
-        <Feature title="Organize" desc="Shapes and lines to map out ideas." colors={colors} />
-        <Feature title="Share" desc="One link, always up to date." colors={colors} />
+        {/* Hero */}
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            textAlign: "center",
+            padding: "40px 20px",
+          }}
+        >
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: colors.text, margin: 0 }}>
+            Put anything, anywhere.
+          </h1>
+
+          <button
+            onClick={handleNewPage}
+            disabled={creating}
+            style={{
+              marginTop: 32,
+              padding: "14px 32px",
+              fontSize: 16,
+              fontWeight: 600,
+              border: "none",
+              borderRadius: 10,
+              background: colors.buttonBg,
+              color: colors.buttonText,
+              cursor: creating ? "default" : "pointer",
+              opacity: creating ? 0.6 : 1,
+            }}
+          >
+            {creating ? "Creating..." : "New Page"}
+          </button>
+        </div>
+
+        {/* Feature labels */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            gap: 56,
+            flexWrap: "wrap",
+            padding: "40px 20px 60px",
+          }}
+        >
+          {["Write", "Organize", "Share"].map((label) => (
+            <div key={label} style={{ fontSize: 15, fontWeight: 600, color: colors.text }}>
+              {label}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
-function NavButton({
-  label,
-  colors,
-  filled,
-}: {
-  label: string;
-  colors: any;
-  filled?: boolean;
-}) {
+// Renders a full-screen grid of plus-marks on a <canvas>, redrawn every frame.
+// Marks grow larger the closer they are to the mouse, with a slight ease on
+// the tracked mouse position so the effect feels smooth rather than snappy.
+function InteractiveGrid({ gridColor }: { gridColor: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const targetMouse = useRef({ x: -1000, y: -1000 });
+  const displayMouse = useRef({ x: -1000, y: -1000 });
+  const rafRef = useRef<number>();
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resize();
+    window.addEventListener("resize", resize);
+
+    function handleMouseMove(e: MouseEvent) {
+      targetMouse.current = { x: e.clientX, y: e.clientY };
+    }
+    window.addEventListener("mousemove", handleMouseMove);
+
+    const GRID_SIZE = 60;
+    const BASE_SIZE = 4;
+    const MAX_SIZE = 12;
+    const INFLUENCE_RADIUS = 320; // bigger reach around the cursor
+    const DRIFT_SPEED = 6; // pixels per second the whole grid slowly drifts
+
+    const startTime = performance.now();
+
+    function draw(now: number) {
+      displayMouse.current.x += (targetMouse.current.x - displayMouse.current.x) * 0.15;
+      displayMouse.current.y += (targetMouse.current.y - displayMouse.current.y) * 0.15;
+      const { x: mx, y: my } = displayMouse.current;
+
+      // Slow continuous drift, independent of the mouse — wraps every GRID_SIZE
+      // so it loops seamlessly forever without ever resetting visibly.
+      const elapsedSeconds = (now - startTime) / 1000;
+      const drift = ((elapsedSeconds * DRIFT_SPEED) % GRID_SIZE + GRID_SIZE) % GRID_SIZE;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = gridColor;
+      ctx.lineWidth = 1;
+
+      const cols = Math.ceil(canvas.width / GRID_SIZE) + 2;
+      const rows = Math.ceil(canvas.height / GRID_SIZE) + 2;
+
+      for (let i = -1; i < cols; i++) {
+        for (let j = -1; j < rows; j++) {
+          const x = i * GRID_SIZE + drift;
+          const y = j * GRID_SIZE + drift;
+          const dist = Math.hypot(x - mx, y - my);
+          const t = Math.max(0, 1 - dist / INFLUENCE_RADIUS);
+          const size = BASE_SIZE + (MAX_SIZE - BASE_SIZE) * t;
+
+          ctx.beginPath();
+          ctx.moveTo(x - size, y);
+          ctx.lineTo(x + size, y);
+          ctx.moveTo(x, y - size);
+          ctx.lineTo(x, y + size);
+          ctx.stroke();
+        }
+      }
+
+      rafRef.current = requestAnimationFrame(draw);
+    }
+    rafRef.current = requestAnimationFrame(draw);
+
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("mousemove", handleMouseMove);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [gridColor]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}
+    />
+  );
+}
+
+
+function NavButton({ label, colors, filled }: { label: string; colors: any; filled?: boolean }) {
   return (
     <button
       disabled
@@ -163,16 +245,5 @@ function NavButton({
     >
       {label}
     </button>
-  );
-}
-
-function Feature({ title, desc, colors }: { title: string; desc: string; colors: any }) {
-  return (
-    <div style={{ maxWidth: 200, textAlign: "center" }}>
-      <div style={{ fontSize: 16, fontWeight: 600, color: colors.text, marginBottom: 6 }}>
-        {title}
-      </div>
-      <div style={{ fontSize: 14, color: colors.subtext }}>{desc}</div>
-    </div>
   );
 }
