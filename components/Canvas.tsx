@@ -584,7 +584,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     height={obj.height}
                     stroke={colors.text}
                     strokeWidth={2}
-                    fill="transparent"
+                    hitStrokeWidth={12} // clickable zone: the outline, plus a few px of margin
                     draggable={mode === "select"}
                     ref={(node) => {
                       if (node) shapeRefs.current[obj.id] = node;
