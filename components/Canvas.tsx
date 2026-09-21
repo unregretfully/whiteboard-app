@@ -554,6 +554,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     x={obj.x}
                     y={obj.y}
                     fontSize={obj.fontSize}
+                    lineHeight={1.2}
                     fill={colors.text}
                     draggable={mode === "select"}
                     ref={(node) => {
@@ -722,6 +723,39 @@ export default function Canvas({ boardId }: { boardId: string }) {
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               commitEditing();
+              return;
+            }
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              const currentObj = objects.find((o) => o.id === editingId) as TextObj | undefined;
+              if (!currentObj) return;
+
+              // Count actual lines in the text being typed right now (including
+              // any wraps from the bullet-list feature), not just fontSize alone,
+              // so the new box drops below wherever this one really ends.
+              const lineCount = Math.max(1, editingValue.split("\n").length);
+              const totalHeightWorld = (currentObj.fontSize ?? 20) * 1.2 * lineCount;
+              const totalHeightScreen = totalHeightWorld * stageScale;
+              const newScreenY = editingScreenPos.y + totalHeightScreen + 8;
+
+              commitEditing(); // save whatever's currently being typed first
+
+              const newId = crypto.randomUUID();
+              const newObj: TextObj = {
+                id: newId,
+                type: "text",
+                x: currentObj.x,
+                y: currentObj.y + totalHeightWorld + 8,
+                text: "",
+                fontSize: currentObj.fontSize,
+              };
+
+              setObjects((prev) => [...prev, newObj]);
+              setSelectedId(newId);
+              setEditingId(newId);
+              setEditingValue("");
+              setEditingIsNew(true);
+              setEditingScreenPos({ x: editingScreenPos.x, y: newScreenY });
               return;
             }
             if (e.key === "Enter") {
