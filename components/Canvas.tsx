@@ -55,12 +55,12 @@ export default function Canvas({ boardId }: { boardId: string }) {
     text: isDark ? "#ededed" : "#171717",
     toolbarBg: isDark ? "#1a1a1a" : "#ffffff",
     toolbarBorder: isDark ? "#333333" : "#e5e5e5",
-    toolbarActiveBg: isDark ? "#3b82f6" : "#2563eb",
+    toolbarActiveBg: isDark ? "#6b6b6b" : "#5a5a5a",
     toolbarHoverBg: isDark ? "#2a2a2a" : "#f0f0f0",
     minimapBg: isDark ? "#1a1a1a" : "#f0f0f0",
     minimapDot: isDark ? "#888888" : "#666666",
-    minimapViewport: isDark ? "#3b82f6" : "#2563eb",
-    draftStroke: isDark ? "#3b82f6" : "#2563eb",
+    minimapViewport: isDark ? "#6b6b6b" : "#5a5a5a",
+    draftStroke: isDark ? "#6b6b6b" : "#5a5a5a",
   };
 
   function getEffectiveGridSize(scale: number) {
