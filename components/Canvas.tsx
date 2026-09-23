@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Stage, Layer, Text, Rect, Line, Circle, Group, Transformer } from "react-konva";
 import { MousePointer2, Eye, Type, Square, Slash } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
@@ -9,9 +9,9 @@ const GRID_SIZE = 50;
 const HISTORY_LIMIT = 20;
 const MINIMAP_WIDTH = 180;
 const MINIMAP_HEIGHT = 130;
-const MIN_DRAW_SIZE = 5; // ignore accidental tiny clicks when drawing shapes/lines
+const MIN_DRAW_SIZE = 5;
 
-type TextObj = { id: string; type: "text"; x: number; y: number; text: string; fontSize: number };
+type TextObj = { id: string; type: "text"; x: number; y: number; text: string; fontSize: number; wrapWidth: number | null };
 type ShapeObj = { id: string; type: "shape"; x: number; y: number; width: number; height: number };
 type LineObj = { id: string; type: "line"; x1: number; y1: number; x2: number; y2: number };
 type CanvasObject = TextObj | ShapeObj | LineObj;
@@ -41,14 +41,14 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const [past, setPast] = useState<CanvasObject[][]>([]);
   const [future, setFuture] = useState<CanvasObject[][]>([]);
 
-  // Tracks an in-progress shape/line drag before it's committed as a real object
   const [draft, setDraft] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const trRef = useRef<any>(null);
   const shapeRefs = useRef<Record<string, any>>({});
   const lineRefs = useRef<Record<string, any>>({});
-  
+  const wrapHandleRefs = useRef<Record<string, any>>({});
+
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
     grid: isDark ? "#333333" : "#dddddd",
@@ -56,6 +56,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     toolbarBg: isDark ? "#1a1a1a" : "#ffffff",
     toolbarBorder: isDark ? "#333333" : "#e5e5e5",
     toolbarActiveBg: isDark ? "#6b6b6b" : "#5a5a5a",
+    transformerStroke: isDark ? "#999999" : "#bbbbbb",
     toolbarHoverBg: isDark ? "#2a2a2a" : "#f0f0f0",
     minimapBg: isDark ? "#1a1a1a" : "#f0f0f0",
     minimapDot: isDark ? "#888888" : "#666666",
@@ -84,8 +85,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  // Minimap fully visible while actively panning/zooming, then dims after
-  // a brief pause — matches how most design tools handle minimap visibility.
   useEffect(() => {
     setMinimapActive(true);
     if (minimapTimeoutRef.current) clearTimeout(minimapTimeoutRef.current);
@@ -93,7 +92,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
     return () => clearTimeout(minimapTimeoutRef.current);
   }, [stagePos, stageScale]);
 
-  // Load this board's saved content once, when the page first opens
   useEffect(() => {
     async function loadBoard() {
       const { data, error } = await supabase
@@ -111,10 +109,8 @@ export default function Canvas({ boardId }: { boardId: string }) {
     loadBoard();
   }, [boardId]);
 
-  // Autosave — waits 800ms after your last change before actually saving,
-  // so rapid edits don't spam the database with a request per keystroke
   useEffect(() => {
-    if (!isLoaded) return; // don't save until the initial load has finished
+    if (!isLoaded) return;
 
     const timeout = setTimeout(async () => {
       const { error } = await supabase
@@ -140,17 +136,15 @@ export default function Canvas({ boardId }: { boardId: string }) {
   useEffect(() => {
     if (editingId && textareaRef.current) {
       textareaRef.current.focus();
-      autosizeTextarea(textareaRef.current);
+      const currentObj = objects.find((o) => o.id === editingId) as TextObj | undefined;
+      autosizeTextarea(textareaRef.current, !currentObj?.wrapWidth);
     }
   }, [editingId]);
 
-  // Only attach the resize Transformer for text/shape — lines use their own
-  // endpoint-handle system since scaling a raw line doesn't map cleanly
-  // onto "resize" the way it does for a box of text or a rectangle.
   useEffect(() => {
     if (!trRef.current) return;
-    const selectedObj = objects.find((o) => o.id === selectedId);
-    if (selectedObj && selectedObj.type !== "line" && shapeRefs.current[selectedId!]) {
+    const selectedObjForTr = objects.find((o) => o.id === selectedId);
+    if (selectedObjForTr && selectedObjForTr.type !== "line" && shapeRefs.current[selectedId!]) {
       trRef.current.nodes([shapeRefs.current[selectedId!]]);
     } else {
       trRef.current.nodes([]);
@@ -184,7 +178,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (editingId) return; // never intercept keys while actively typing
+      if (editingId) return;
 
       const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
       const isRedo =
@@ -208,8 +202,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
         return;
       }
 
-      // Tool-switching shortcuts — only plain letter presses, no modifier keys,
-      // so Ctrl+V (paste), Cmd+T (new browser tab), etc. still work normally.
       const noModifiers = !e.ctrlKey && !e.metaKey && !e.altKey;
 
       if (noModifiers) {
@@ -248,20 +240,23 @@ export default function Canvas({ boardId }: { boardId: string }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectedId, editingId, objects, past, future, mode]);
 
-  function autosizeTextarea(el: HTMLTextAreaElement) {
+  function autosizeTextarea(el: HTMLTextAreaElement, isAutoWidth: boolean) {
     el.style.height = "auto";
-    el.style.width = "auto";
     el.style.height = el.scrollHeight + "px";
-    el.style.width = Math.max(20, el.scrollWidth + 4) + "px";
+    if (isAutoWidth) {
+      el.style.width = "auto";
+      el.style.width = Math.max(20, el.scrollWidth + 4) + "px";
+    }
   }
 
-  // Handles the "- " -> "• " auto-bullet conversion as you type
   function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const el = e.target;
     const value = el.value;
     const cursorPos = el.selectionStart;
     const lineStart = value.lastIndexOf("\n", cursorPos - 1) + 1;
     const currentLine = value.slice(lineStart, cursorPos);
+    const currentObj = objects.find((o) => o.id === editingId) as TextObj | undefined;
+    const isAutoWidth = !currentObj?.wrapWidth;
 
     if (currentLine === "- ") {
       const newValue = value.slice(0, lineStart) + "\u2022 " + value.slice(cursorPos);
@@ -270,14 +265,14 @@ export default function Canvas({ boardId }: { boardId: string }) {
       requestAnimationFrame(() => {
         if (textareaRef.current) {
           textareaRef.current.setSelectionRange(newCursor, newCursor);
-          autosizeTextarea(textareaRef.current);
+          autosizeTextarea(textareaRef.current, isAutoWidth);
         }
       });
       return;
     }
 
     setEditingValue(value);
-    autosizeTextarea(el);
+    autosizeTextarea(el, isAutoWidth);
   }
 
   function handleWheel(e: any) {
@@ -339,7 +334,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     const dy = Math.abs(current.y - start.y);
 
     if (dx < MIN_DRAW_SIZE && dy < MIN_DRAW_SIZE) {
-      setDraft(null); // too small — treat as an accidental click, not a real draw
+      setDraft(null);
       return;
     }
 
@@ -362,7 +357,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     commitChange([...objects, newObj]);
     setDraft(null);
     setSelectedId(newId);
-    setMode("select"); // draw once, then immediately drop into select mode to adjust it
+    setMode("select");
   }
 
   function handleStageClick(e: any) {
@@ -381,7 +376,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     const world = toWorld(pointer);
 
     const newId = crypto.randomUUID();
-    const newObj: TextObj = { id: newId, type: "text", x: world.x, y: world.y, text: "", fontSize: 20 };
+    const newObj: TextObj = { id: newId, type: "text", x: world.x, y: world.y, text: "", fontSize: 20, wrapWidth: null };
 
     setObjects((prev) => [...prev, newObj]);
     setSelectedId(newId);
@@ -431,11 +426,32 @@ export default function Canvas({ boardId }: { boardId: string }) {
   }
 
   function handleDragEnd(id: string, node: any, type: CanvasObject["type"]) {
-    if (type === "line") return; // lines handle their own drag logic separately
+    if (type === "line") return;
     commitChange(
       objects.map((o) => (o.id === id ? { ...o, x: node.x(), y: node.y() } : o))
     );
   }
+
+  function repositionWrapHandle(objId: string) {
+    const textNode = shapeRefs.current[objId];
+    const handleNode = wrapHandleRefs.current[objId];
+    if (!textNode || !handleNode) return;
+
+    const liveWidth = textNode.width() * textNode.scaleX();
+    const liveHeight = textNode.height() * textNode.scaleY();
+
+    handleNode.x(textNode.x() + liveWidth - 3);
+    handleNode.y(textNode.y() + liveHeight / 2 - 10);
+    handleNode.getLayer()?.batchDraw();
+  }
+
+  // Runs right after React has actually committed new props to Konva
+  // (transform end, drag end, or a text edit that changes wrapped height) —
+  // this is what fixes the handle drifting after releasing a resize, since
+  // calculating position during render reads stale, pre-update measurements.
+  useLayoutEffect(() => {
+    if (selectedId) repositionWrapHandle(selectedId);
+  }, [objects, selectedId]);
 
   function handleTransformEnd(obj: TextObj | ShapeObj) {
     const node = shapeRefs.current[obj.id];
@@ -448,9 +464,13 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
     if (obj.type === "text") {
       const newFontSize = Math.max(8, Math.round(obj.fontSize * scaleX));
+      const baseWidth = obj.wrapWidth ?? node.width();
+      const newWrapWidth = Math.max(40, Math.round(baseWidth * scaleX));
       commitChange(
         objects.map((o) =>
-          o.id === obj.id ? { ...o, fontSize: newFontSize, x: node.x(), y: node.y() } : o
+          o.id === obj.id && o.type === "text"
+            ? { ...o, fontSize: newFontSize, wrapWidth: newWrapWidth, x: node.x(), y: node.y() }
+            : o
         )
       );
     } else {
@@ -464,7 +484,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
     }
   }
 
-  // Moving a whole line by dragging its body (not an endpoint)
   function handleLineBodyDragEnd(obj: LineObj, node: any) {
     const dx = node.x();
     const dy = node.y();
@@ -479,7 +498,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
     );
   }
 
-  // Dragging a single endpoint handle to reshape the line
   function handleLineEndpointDragEnd(obj: LineObj, which: "1" | "2", node: any) {
     const world = { x: node.x(), y: node.y() };
     commitChange(
@@ -553,6 +571,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     text={obj.text}
                     x={obj.x}
                     y={obj.y}
+                    width={obj.wrapWidth ?? undefined}
                     fontSize={obj.fontSize}
                     lineHeight={1.2}
                     fill={colors.text}
@@ -569,7 +588,9 @@ export default function Canvas({ boardId }: { boardId: string }) {
                       e.cancelBubble = true;
                       startEditingExisting(obj);
                     }}
+                    onDragMove={() => repositionWrapHandle(obj.id)}
                     onDragEnd={(e) => handleDragEnd(obj.id, e.target, "text")}
+                    onTransform={() => repositionWrapHandle(obj.id)}
                     onTransformEnd={() => handleTransformEnd(obj)}
                   />
                 );
@@ -585,7 +606,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     height={obj.height}
                     stroke={colors.text}
                     strokeWidth={2}
-                    hitStrokeWidth={12} // clickable zone: the outline, plus a few px of margin
+                    hitStrokeWidth={12}
                     draggable={mode === "select"}
                     ref={(node) => {
                       if (node) shapeRefs.current[obj.id] = node;
@@ -601,8 +622,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
                 );
               }
 
-              // Line — grouped so the body and endpoint handles move together
-              // live as one unit; endpoint drags also live-update the line shape.
               const isSelected = obj.id === selectedId;
               return (
                 <Group
@@ -633,7 +652,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                         fill={colors.toolbarActiveBg}
                         draggable
                         onDragStart={(e) => {
-                          e.cancelBubble = true; // don't also trigger the group's body-drag
+                          e.cancelBubble = true;
                         }}
                         onDragMove={(e) => {
                           e.cancelBubble = true;
@@ -701,15 +720,35 @@ export default function Canvas({ boardId }: { boardId: string }) {
           ))}
 
           {selectedObj && selectedObj.type !== "line" && mode === "select" && (
-            <Transformer
-              ref={trRef}
-              enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
-              rotateEnabled={false}
-              boundBoxFunc={(oldBox, newBox) => {
-                if (newBox.width < 20 || newBox.height < 20) return oldBox;
-                return newBox;
-              }}
-            />
+            <>
+              <Transformer
+                ref={trRef}
+                enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+                rotateEnabled={false}
+                keepRatio={true}
+                borderStroke={colors.transformerStroke}
+                borderStrokeWidth={1.5}
+                anchorStroke={colors.transformerStroke}
+                anchorFill={isDark ? "#1a1a1a" : "#ffffff"}
+                anchorSize={8}
+                boundBoxFunc={(oldBox, newBox) => {
+                  if (newBox.width < 20 || newBox.height < 20) return oldBox;
+                  return newBox;
+                }}
+              />
+
+              {selectedObj.type === "text" && (
+                <WrapHandle
+                  obj={selectedObj}
+                  shapeRefs={shapeRefs}
+                  wrapHandleRefs={wrapHandleRefs}
+                  trRef={trRef}
+                  commitChange={commitChange}
+                  objects={objects}
+                  colors={colors}
+                />
+              )}
+            </>
           )}
         </Layer>
       </Stage>
@@ -730,15 +769,12 @@ export default function Canvas({ boardId }: { boardId: string }) {
               const currentObj = objects.find((o) => o.id === editingId) as TextObj | undefined;
               if (!currentObj) return;
 
-              // Count actual lines in the text being typed right now (including
-              // any wraps from the bullet-list feature), not just fontSize alone,
-              // so the new box drops below wherever this one really ends.
               const lineCount = Math.max(1, editingValue.split("\n").length);
               const totalHeightWorld = (currentObj.fontSize ?? 20) * 1.2 * lineCount;
               const totalHeightScreen = totalHeightWorld * stageScale;
               const newScreenY = editingScreenPos.y + totalHeightScreen + 8;
 
-              commitEditing(); // save whatever's currently being typed first
+              commitEditing();
 
               const newId = crypto.randomUUID();
               const newObj: TextObj = {
@@ -748,6 +784,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                 y: currentObj.y + totalHeightWorld + 8,
                 text: "",
                 fontSize: currentObj.fontSize,
+                wrapWidth: currentObj.wrapWidth,
               };
 
               setObjects((prev) => [...prev, newObj]);
@@ -759,6 +796,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
               return;
             }
             if (e.key === "Enter") {
+              const currentObjForAuto = objects.find((o) => o.id === editingId) as TextObj | undefined;
               const el = e.currentTarget;
               const value = el.value;
               const cursorPos = el.selectionStart;
@@ -771,17 +809,15 @@ export default function Canvas({ boardId }: { boardId: string }) {
                 const content = bulletMatch[1];
 
                 if (content.trim() === "") {
-                  // Empty bullet line + Enter = stop the list (remove the bullet)
                   const newValue = value.slice(0, lineStart) + value.slice(cursorPos);
                   setEditingValue(newValue);
                   requestAnimationFrame(() => {
                     if (textareaRef.current) {
                       textareaRef.current.setSelectionRange(lineStart, lineStart);
-                      autosizeTextarea(textareaRef.current);
+                      autosizeTextarea(textareaRef.current, !currentObjForAuto?.wrapWidth);
                     }
                   });
                 } else {
-                  // Continue the list on the next line
                   const insertion = "\n\u2022 ";
                   const newValue = value.slice(0, cursorPos) + insertion + value.slice(cursorPos);
                   const newCursor = cursorPos + insertion.length;
@@ -789,7 +825,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                   requestAnimationFrame(() => {
                     if (textareaRef.current) {
                       textareaRef.current.setSelectionRange(newCursor, newCursor);
-                      autosizeTextarea(textareaRef.current);
+                      autosizeTextarea(textareaRef.current, !currentObjForAuto?.wrapWidth);
                     }
                   });
                 }
@@ -800,6 +836,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
             position: "absolute",
             top: editingScreenPos.y,
             left: editingScreenPos.x,
+            width: editingObj?.wrapWidth ? editingObj.wrapWidth * stageScale : undefined,
             fontSize: (editingObj?.fontSize ?? 20) * stageScale,
             lineHeight: 1.2,
             fontFamily: "Arial, Helvetica, sans-serif",
@@ -812,7 +849,9 @@ export default function Canvas({ boardId }: { boardId: string }) {
             margin: 0,
             resize: "none",
             overflow: "hidden",
-            whiteSpace: "pre",
+            whiteSpace: editingObj?.wrapWidth ? "pre-wrap" : "pre",
+            wordBreak: "normal",
+            overflowWrap: "break-word",
           }}
         />
       )}
@@ -827,6 +866,83 @@ export default function Canvas({ boardId }: { boardId: string }) {
         active={minimapActive}
       />
     </div>
+  );
+}
+
+function WrapHandle({
+  obj,
+  shapeRefs,
+  wrapHandleRefs,
+  trRef,
+  commitChange,
+  objects,
+  colors,
+}: {
+  obj: TextObj;
+  shapeRefs: React.MutableRefObject<Record<string, any>>;
+  wrapHandleRefs: React.MutableRefObject<Record<string, any>>;
+  trRef: React.MutableRefObject<any>;
+  commitChange: (newState: CanvasObject[]) => void;
+  objects: CanvasObject[];
+  colors: any;
+}) {
+  // Only an initial guess for the very first paint — the useLayoutEffect
+  // in the parent corrects it immediately using real, post-commit measurements.
+  const currentWidth = obj.wrapWidth ?? 100;
+  const currentHeight = obj.fontSize * 1.2 * Math.max(1, obj.text.split("\n").length);
+
+  return (
+    <Rect
+      x={obj.x + currentWidth - 3}
+      y={obj.y + currentHeight / 2 - 10}
+      width={6}
+      height={20}
+      cornerRadius={3}
+      fill={colors.toolbarActiveBg}
+      stroke={colors.transformerStroke}
+      strokeWidth={1.5}
+      draggable
+      ref={(node) => {
+        if (node) wrapHandleRefs.current[obj.id] = node;
+      }}
+      dragBoundFunc={(pos) => {
+        const liveTextNode = shapeRefs.current[obj.id];
+        if (!liveTextNode) return { x: pos.x, y: pos.y };
+
+        const newWidth = Math.max(40, pos.x - obj.x + 3);
+        liveTextNode.width(newWidth);
+
+        const tr = trRef.current;
+        tr?.forceUpdate();
+        liveTextNode.getLayer()?.batchDraw();
+
+        const layer = liveTextNode.getLayer();
+        const topRight = tr?.findOne(".top-right");
+        const bottomRight = tr?.findOne(".bottom-right");
+        if (topRight && bottomRight && layer) {
+          const topPos = topRight.getAbsolutePosition(layer);
+          const bottomPos = bottomRight.getAbsolutePosition(layer);
+          const centerY = (topPos.y + bottomPos.y) / 2;
+          return { x: pos.x, y: centerY - 10 };
+        }
+
+        const newHeight = liveTextNode.height();
+        return { x: pos.x, y: obj.y + newHeight / 2 - 10 };
+      }}
+      onDragStart={(e) => {
+        e.cancelBubble = true;
+      }}
+      onDragMove={(e) => {
+        e.cancelBubble = true;
+      }}
+      onDragEnd={(e) => {
+        e.cancelBubble = true;
+        const newWidth = Math.max(40, e.target.x() - obj.x + 3);
+        commitChange(
+          objects.map((o) => (o.id === obj.id && o.type === "text" ? { ...o, wrapWidth: newWidth } : o))
+        );
+      }}
+    />
   );
 }
 
