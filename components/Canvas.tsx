@@ -886,8 +886,6 @@ function WrapHandle({
   objects: CanvasObject[];
   colors: any;
 }) {
-  // Only an initial guess for the very first paint — the useLayoutEffect
-  // in the parent corrects it immediately using real, post-commit measurements.
   const currentWidth = obj.wrapWidth ?? 100;
   const currentHeight = obj.fontSize * 1.2 * Math.max(1, obj.text.split("\n").length);
 
@@ -905,39 +903,37 @@ function WrapHandle({
       ref={(node) => {
         if (node) wrapHandleRefs.current[obj.id] = node;
       }}
-      dragBoundFunc={(pos) => {
-        const liveTextNode = shapeRefs.current[obj.id];
-        if (!liveTextNode) return { x: pos.x, y: pos.y };
-
-        const newWidth = Math.max(40, pos.x - obj.x + 3);
-        liveTextNode.width(newWidth);
-
-        const tr = trRef.current;
-        tr?.forceUpdate();
-        liveTextNode.getLayer()?.batchDraw();
-
-        const layer = liveTextNode.getLayer();
-        const topRight = tr?.findOne(".top-right");
-        const bottomRight = tr?.findOne(".bottom-right");
-        if (topRight && bottomRight && layer) {
-          const topPos = topRight.getAbsolutePosition(layer);
-          const bottomPos = bottomRight.getAbsolutePosition(layer);
-          const centerY = (topPos.y + bottomPos.y) / 2;
-          return { x: pos.x, y: centerY - 10 };
-        }
-
-        const newHeight = liveTextNode.height();
-        return { x: pos.x, y: obj.y + newHeight / 2 - 10 };
-      }}
       onDragStart={(e) => {
         e.cancelBubble = true;
       }}
+      // No dragBoundFunc — Konva's dragBoundFunc must be a pure function, and
+      // doing real mutations inside it (as the previous version did) let
+      // small inconsistencies accumulate over a long drag session. Instead,
+      // we let the node drag freely, then correct its position every move
+      // event here — the same proven pattern already used for line endpoints.
       onDragMove={(e) => {
         e.cancelBubble = true;
+        const liveTextNode = shapeRefs.current[obj.id];
+        if (!liveTextNode) return;
+
+        const liveX = liveTextNode.x();
+        const minWidth = Math.max(20, obj.fontSize);
+        const newWidth = Math.max(minWidth, e.target.x() - liveX + 3);
+        liveTextNode.width(newWidth);
+
+        const correctedX = liveX + newWidth - 3;
+        const correctedY = liveTextNode.y() + liveTextNode.height() / 2 - 10;
+        e.target.position({ x: correctedX, y: correctedY });
+
+        trRef.current?.forceUpdate();
+        liveTextNode.getLayer()?.batchDraw();
       }}
       onDragEnd={(e) => {
         e.cancelBubble = true;
-        const newWidth = Math.max(40, e.target.x() - obj.x + 3);
+        const liveTextNode = shapeRefs.current[obj.id];
+        const liveX = liveTextNode ? liveTextNode.x() : obj.x;
+        const minWidth = Math.max(20, obj.fontSize);
+        const newWidth = Math.max(minWidth, e.target.x() - liveX + 3);
         commitChange(
           objects.map((o) => (o.id === obj.id && o.type === "text" ? { ...o, wrapWidth: newWidth } : o))
         );
