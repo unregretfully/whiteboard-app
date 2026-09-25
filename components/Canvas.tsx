@@ -23,6 +23,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [stageScale, setStageScale] = useState(1);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [pageName, setPageName] = useState<string | null>(null);
 
   const [minimapActive, setMinimapActive] = useState(true);
   const minimapTimeoutRef = useRef<any>(null);
@@ -96,13 +97,14 @@ export default function Canvas({ boardId }: { boardId: string }) {
     async function loadBoard() {
       const { data, error } = await supabase
         .from("boards")
-        .select("data")
+        .select("data, name")
         .eq("id", boardId)
         .single();
       if (error) console.error("Load failed:", error);
 
       if (data) {
         setObjects(data.data as CanvasObject[]);
+        setPageName(data.name ?? null);
       }
       setIsLoaded(true);
     }
@@ -115,13 +117,13 @@ export default function Canvas({ boardId }: { boardId: string }) {
     const timeout = setTimeout(async () => {
       const { error } = await supabase
         .from("boards")
-        .update({ data: objects, updated_at: new Date().toISOString() })
+        .update({ data: objects, name: pageName, updated_at: new Date().toISOString() })
         .eq("id", boardId);
       if (error) console.error("Save failed:", error);
     }, 800);
 
     return () => clearTimeout(timeout);
-  }, [objects, isLoaded, boardId]);
+  }, [objects, pageName, isLoaded, boardId]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -132,6 +134,29 @@ export default function Canvas({ boardId }: { boardId: string }) {
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
+
+  // Keep the browser tab title in sync: a manually set page name always
+  // wins; otherwise fall back to the first text object's content, or
+  // finally "New Page" if the board is empty.
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    if (pageName && pageName.trim().length > 0) {
+      document.title = `${pageName.trim()} – Notebooook`;
+      return;
+    }
+
+    const firstText = objects.find(
+      (o): o is TextObj => o.type === "text" && o.text.trim().length > 0
+    );
+
+    if (firstText) {
+      const preview = firstText.text.trim().split("\n")[0].slice(0, 40);
+      document.title = `${preview} – Notebooook`;
+    } else {
+      document.title = "New Page – Notebooook";
+    }
+  }, [objects, pageName, isLoaded]);
 
   useEffect(() => {
     if (editingId && textareaRef.current) {
@@ -445,10 +470,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
     handleNode.getLayer()?.batchDraw();
   }
 
-  // Runs right after React has actually committed new props to Konva
-  // (transform end, drag end, or a text edit that changes wrapped height) —
-  // this is what fixes the handle drifting after releasing a resize, since
-  // calculating position during render reads stale, pre-update measurements.
   useLayoutEffect(() => {
     if (selectedId) repositionWrapHandle(selectedId);
   }, [objects, selectedId]);
@@ -543,6 +564,8 @@ export default function Canvas({ boardId }: { boardId: string }) {
       }}
     >
       <Toolbar mode={mode} onSelect={switchMode} colors={colors} />
+
+      <PageNameInput pageName={pageName} setPageName={setPageName} colors={colors} />
 
       <Stage
         width={dimensions.width}
@@ -869,6 +892,43 @@ export default function Canvas({ boardId }: { boardId: string }) {
   );
 }
 
+function PageNameInput({
+  pageName,
+  setPageName,
+  colors,
+}: {
+  pageName: string | null;
+  setPageName: (name: string) => void;
+  colors: any;
+}) {
+  return (
+    <input
+      value={pageName ?? ""}
+      onChange={(e) => setPageName(e.target.value)}
+      placeholder="Untitled"
+      style={{
+        position: "absolute",
+        top: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 10,
+        textAlign: "center",
+        fontSize: 14,
+        fontWeight: 500,
+        fontFamily: "Arial, Helvetica, sans-serif",
+        color: colors.text,
+        background: colors.toolbarBg,
+        border: `1px solid ${colors.toolbarBorder}`,
+        borderRadius: 10,
+        padding: "9px 16px",
+        outline: "none",
+        minWidth: 160,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
+      }}
+    />
+  );
+}
+
 function WrapHandle({
   obj,
   shapeRefs,
@@ -906,11 +966,6 @@ function WrapHandle({
       onDragStart={(e) => {
         e.cancelBubble = true;
       }}
-      // No dragBoundFunc — Konva's dragBoundFunc must be a pure function, and
-      // doing real mutations inside it (as the previous version did) let
-      // small inconsistencies accumulate over a long drag session. Instead,
-      // we let the node drag freely, then correct its position every move
-      // event here — the same proven pattern already used for line endpoints.
       onDragMove={(e) => {
         e.cancelBubble = true;
         const liveTextNode = shapeRefs.current[obj.id];
