@@ -24,7 +24,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const [stageScale, setStageScale] = useState(1);
   const [isLoaded, setIsLoaded] = useState(false);
   const [pageName, setPageName] = useState<string | null>(null);
-
+  const [pageNameFocused, setPageNameFocused] = useState(false);
   const [minimapActive, setMinimapActive] = useState(true);
   const minimapTimeoutRef = useRef<any>(null);
 
@@ -203,7 +203,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (editingId) return;
+      if (editingId || pageNameFocused) return;
 
       const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
       const isRedo =
@@ -263,7 +263,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, editingId, objects, past, future, mode]);
+  }, [selectedId, editingId, objects, past, future, mode, pageNameFocused]);
 
   function autosizeTextarea(el: HTMLTextAreaElement, isAutoWidth: boolean) {
     el.style.height = "auto";
@@ -565,7 +565,12 @@ export default function Canvas({ boardId }: { boardId: string }) {
     >
       <Toolbar mode={mode} onSelect={switchMode} colors={colors} />
 
-      <PageNameInput pageName={pageName} setPageName={setPageName} colors={colors} />
+      <PageNameInput
+        pageName={pageName}
+        setPageName={setPageName}
+        colors={colors}
+        onFocusChange={setPageNameFocused}
+      />
 
       <Stage
         width={dimensions.width}
@@ -896,15 +901,19 @@ function PageNameInput({
   pageName,
   setPageName,
   colors,
+  onFocusChange,
 }: {
   pageName: string | null;
   setPageName: (name: string) => void;
   colors: any;
+  onFocusChange: (focused: boolean) => void;
 }) {
   return (
     <input
       value={pageName ?? ""}
       onChange={(e) => setPageName(e.target.value)}
+      onFocus={() => onFocusChange(true)}
+      onBlur={() => onFocusChange(false)}
       placeholder="Untitled"
       style={{
         position: "absolute",
