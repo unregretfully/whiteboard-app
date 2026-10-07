@@ -8,7 +8,7 @@ import { supabase } from "../../lib/supabaseClient";
 export default function LoginPage() {
   const router = useRouter();
   const [isDark, setIsDark] = useState(false);
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState(""); // username OR email
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,10 +39,43 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const trimmedIdentifier = identifier.trim();
+    const looksLikeEmail = trimmedIdentifier.includes("@");
 
-    if (error) {
-      setError(error.message);
+    let authEmail: string;
+
+    if (looksLikeEmail) {
+      // They typed something email-shaped — use it directly. This also
+      // naturally covers the placeholder emails for accounts created
+      // without a real one, in case someone remembers their generated one.
+      authEmail = trimmedIdentifier;
+    } else {
+      // Treat it as a username — look up the account's real auth email,
+      // falling back to the generated placeholder pattern if this account
+      // predates the "store the real email on the profile" change.
+      const normalizedUsername = trimmedIdentifier.toLowerCase();
+      const { data: profile, error: lookupError } = await supabase
+        .from("profiles")
+        .select("email")
+        .eq("username", normalizedUsername)
+        .single();
+
+      if (lookupError || !profile) {
+        setError("No account found with that username.");
+        setLoading(false);
+        return;
+      }
+
+      authEmail = profile.email ?? `${normalizedUsername}@notebooook.local`;
+    }
+
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: authEmail,
+      password,
+    });
+
+    if (signInError) {
+      setError(signInError.message);
       setLoading(false);
       return;
     }
@@ -72,10 +105,10 @@ export default function LoginPage() {
         style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", maxWidth: 320 }}
       >
         <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          type="text"
+          placeholder="Username or email"
+          value={identifier}
+          onChange={(e) => setIdentifier(e.target.value)}
           required
           style={{
             padding: "12px 14px",
