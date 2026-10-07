@@ -747,7 +747,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
             />
           ))}
 
-          {selectedObj && selectedObj.type !== "line" && mode === "select" && (
+          {selectedObj && selectedObj.type !== "line" && mode === "select" && selectedObj.id !== editingId && (
             <>
               <Transformer
                 ref={trRef}
@@ -867,7 +867,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
             width: editingObj?.wrapWidth ? editingObj.wrapWidth * stageScale : undefined,
             fontSize: (editingObj?.fontSize ?? 20) * stageScale,
             lineHeight: 1.2,
-            fontFamily: "Arial, Helvetica, sans-serif",
+            fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
             color: colors.text,
             background: "transparent",
             border: "none",
@@ -880,6 +880,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
             whiteSpace: editingObj?.wrapWidth ? "pre-wrap" : "pre",
             wordBreak: "normal",
             overflowWrap: "break-word",
+            transition: "height 0.08s ease-out",
           }}
         />
       )}
@@ -924,7 +925,7 @@ function PageNameInput({
         textAlign: "center",
         fontSize: 14,
         fontWeight: 500,
-        fontFamily: "Arial, Helvetica, sans-serif",
+        fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
         color: colors.text,
         background: colors.toolbarBg,
         border: `1px solid ${colors.toolbarBorder}`,

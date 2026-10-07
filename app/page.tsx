@@ -51,7 +51,7 @@ export default function Home() {
         minHeight: "100vh",
         backgroundColor: colors.background,
         overflow: "hidden",
-        fontFamily: "Arial, Helvetica, sans-serif",
+        fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
       }}
     >
       <InteractiveGrid gridColor={colors.grid} highlightColor={colors.gridHighlight} />
