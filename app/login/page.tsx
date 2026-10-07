@@ -8,7 +8,7 @@ import { supabase } from "../../lib/supabaseClient";
 export default function LoginPage() {
   const router = useRouter();
   const [isDark, setIsDark] = useState(false);
-  const [identifier, setIdentifier] = useState(""); // username OR email
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,48 +34,44 @@ export default function LoginPage() {
     errorText: isDark ? "#f87171" : "#dc2626",
   };
 
+  const inputStyle = {
+    padding: "12px 14px",
+    fontSize: 14,
+    fontFamily: "inherit",
+    color: colors.text,
+    background: colors.inputBg,
+    border: `1px solid ${colors.inputBorder}`,
+    borderRadius: 10,
+    outline: "none",
+  } as const;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
 
-    const trimmedIdentifier = identifier.trim();
-    const looksLikeEmail = trimmedIdentifier.includes("@");
+    // The database returns only a private login address (or a decoy for
+    // unknown names). Every failure shows the same message on purpose, so
+    // this form can't be used to discover which accounts exist.
+    const genericError = "Invalid username/email or password.";
 
-    let authEmail: string;
+    const { data: loginEmail, error: lookupError } = await supabase.rpc("login_email_for", {
+      identifier: identifier.trim(),
+    });
 
-    if (looksLikeEmail) {
-      // They typed something email-shaped — use it directly. This also
-      // naturally covers the placeholder emails for accounts created
-      // without a real one, in case someone remembers their generated one.
-      authEmail = trimmedIdentifier;
-    } else {
-      // Treat it as a username — look up the account's real auth email,
-      // falling back to the generated placeholder pattern if this account
-      // predates the "store the real email on the profile" change.
-      const normalizedUsername = trimmedIdentifier.toLowerCase();
-      const { data: profile, error: lookupError } = await supabase
-        .from("profiles")
-        .select("email")
-        .eq("username", normalizedUsername)
-        .single();
-
-      if (lookupError || !profile) {
-        setError("No account found with that username.");
-        setLoading(false);
-        return;
-      }
-
-      authEmail = profile.email ?? `${normalizedUsername}@notebooook.local`;
+    if (lookupError || !loginEmail) {
+      setError(genericError);
+      setLoading(false);
+      return;
     }
 
     const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: authEmail,
+      email: loginEmail as string,
       password,
     });
 
     if (signInError) {
-      setError(signInError.message);
+      setError(genericError);
       setLoading(false);
       return;
     }
@@ -110,16 +106,7 @@ export default function LoginPage() {
           value={identifier}
           onChange={(e) => setIdentifier(e.target.value)}
           required
-          style={{
-            padding: "12px 14px",
-            fontSize: 14,
-            fontFamily: "inherit",
-            color: colors.text,
-            background: colors.inputBg,
-            border: `1px solid ${colors.inputBorder}`,
-            borderRadius: 10,
-            outline: "none",
-          }}
+          style={inputStyle}
         />
         <input
           type="password"
@@ -127,21 +114,10 @@ export default function LoginPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
-          style={{
-            padding: "12px 14px",
-            fontSize: 14,
-            fontFamily: "inherit",
-            color: colors.text,
-            background: colors.inputBg,
-            border: `1px solid ${colors.inputBorder}`,
-            borderRadius: 10,
-            outline: "none",
-          }}
+          style={inputStyle}
         />
 
-        {error && (
-          <div style={{ fontSize: 13, color: colors.errorText }}>{error}</div>
-        )}
+        {error && <div style={{ fontSize: 13, color: colors.errorText }}>{error}</div>}
 
         <button
           type="submit"

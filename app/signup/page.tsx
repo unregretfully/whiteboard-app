@@ -53,6 +53,17 @@ export default function SignupPage() {
     errorText: isDark ? "#f87171" : "#dc2626",
   };
 
+  const inputStyle = {
+    padding: "12px 14px",
+    fontSize: 14,
+    fontFamily: "inherit",
+    color: colors.text,
+    background: colors.inputBg,
+    border: `1px solid ${colors.inputBorder}`,
+    borderRadius: 10,
+    outline: "none",
+  } as const;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -66,45 +77,37 @@ export default function SignupPage() {
 
     setLoading(true);
 
-    const trimmedEmail = email.trim();
-    // Supabase's auth system always needs *an* email internally — if the
-    // user skipped the optional email field, we generate a private
-    // placeholder behind the scenes so signup still works with just a
-    // username + password. If they did provide a real email, we use it.
-    const authEmail = trimmedEmail.length > 0 ? trimmedEmail : `${normalizedUsername}@notebooook.local`;
+    // Friendly pre-check; the database trigger is the real enforcement.
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("username", normalizedUsername)
+      .maybeSingle();
+    if (existing) {
+      setError("That username is already taken.");
+      setLoading(false);
+      return;
+    }
 
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email: authEmail,
+    // The account's login address is a random private placeholder. The real
+    // email (if given) is stored separately in a table only its owner can read.
+    const { error: signUpError } = await supabase.auth.signUp({
+      email: `${crypto.randomUUID()}@notebooook.local`,
       password,
+      options: {
+        data: {
+          username: normalizedUsername,
+          contact_email: email.trim().toLowerCase(),
+        },
+      },
     });
 
     if (signUpError) {
-      setError(signUpError.message);
-      setLoading(false);
-      return;
-    }
-
-    if (!signUpData.user) {
-      setError("Something went wrong creating your account.");
-      setLoading(false);
-      return;
-    }
-
-    // Only store a real-looking email on the profile if the user actually
-    // provided one — otherwise leave it null, so we know later (Phase 10)
-    // that this account still needs to add a real email.
-    const { error: profileError } = await supabase.from("profiles").insert({
-      id: signUpData.user.id,
-      username: normalizedUsername,
-      email: trimmedEmail.length > 0 ? trimmedEmail : null,
-    });
-
-    if (profileError) {
-      if (profileError.code === "23505") {
-        setError("That username or email is already taken.");
-      } else {
-        setError(profileError.message);
-      }
+      setError(
+        signUpError.message.includes("Database error")
+          ? "That username or email is already taken."
+          : signUpError.message
+      );
       setLoading(false);
       return;
     }
@@ -139,32 +142,14 @@ export default function SignupPage() {
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           required
-          style={{
-            padding: "12px 14px",
-            fontSize: 14,
-            fontFamily: "inherit",
-            color: colors.text,
-            background: colors.inputBg,
-            border: `1px solid ${colors.inputBorder}`,
-            borderRadius: 10,
-            outline: "none",
-          }}
+          style={inputStyle}
         />
         <input
           type="email"
           placeholder="Email (optional, for now)"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={{
-            padding: "12px 14px",
-            fontSize: 14,
-            fontFamily: "inherit",
-            color: colors.text,
-            background: colors.inputBg,
-            border: `1px solid ${colors.inputBorder}`,
-            borderRadius: 10,
-            outline: "none",
-          }}
+          style={inputStyle}
         />
         <input
           type="password"
@@ -173,21 +158,10 @@ export default function SignupPage() {
           onChange={(e) => setPassword(e.target.value)}
           required
           minLength={6}
-          style={{
-            padding: "12px 14px",
-            fontSize: 14,
-            fontFamily: "inherit",
-            color: colors.text,
-            background: colors.inputBg,
-            border: `1px solid ${colors.inputBorder}`,
-            borderRadius: 10,
-            outline: "none",
-          }}
+          style={inputStyle}
         />
 
-        {error && (
-          <div style={{ fontSize: 13, color: colors.errorText }}>{error}</div>
-        )}
+        {error && <div style={{ fontSize: 13, color: colors.errorText }}>{error}</div>}
 
         <button
           type="submit"
