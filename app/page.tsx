@@ -1,11 +1,30 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
+import { useUser } from "../lib/useUser";
+
+const FEATURES = [
+  {
+    title: "Write",
+    body: "Click anywhere and start typing. Bullets continue on their own, and Ctrl+Enter starts a new note right underneath.",
+  },
+  {
+    title: "Organize",
+    body: "Drag notes where you want them, connect ideas with boxes and lines, and zoom out to see the whole page.",
+  },
+  {
+    title: "Share",
+    body: "Every page has its own link. Send it to someone and they see exactly what you see.",
+  },
+];
 
 export default function Home() {
   const router = useRouter();
+  const { user, profile, loading: userLoading } = useUser();
   const [isDark, setIsDark] = useState(false);
   const [creating, setCreating] = useState(false);
 
@@ -24,11 +43,11 @@ export default function Home() {
     grid: isDark ? "#2a2a2a" : "#eaeaea",
     gridHighlight: isDark ? "#8f8f8f" : "#6f6f6f",
     text: isDark ? "#ededed" : "#171717",
-    subtext: isDark ? "#999999" : "#666666",
+    subtext: isDark ? "#a3a3a3" : "#666666",
     buttonBg: isDark ? "#e5e5e5" : "#2c2c2c",
     buttonText: isDark ? "#111111" : "#ffffff",
-    disabledBorder: isDark ? "#333333" : "#dddddd",
-    navBarBorder: isDark ? "#2a2a2a" : "#ececec",
+    border: isDark ? "#2a2a2a" : "#ececec",
+    outlineBorder: isDark ? "#333333" : "#dddddd",
   };
 
   async function handleNewPage() {
@@ -44,28 +63,51 @@ export default function Home() {
     }
   }
 
+  async function handleLogout() {
+    await supabase.auth.signOut();
+  }
+
+  function navButtonStyle(filled?: boolean): CSSProperties {
+    return {
+      display: "inline-block",
+      padding: "8px 18px",
+      fontSize: 14,
+      fontWeight: 500,
+      fontFamily: "inherit",
+      borderRadius: 8,
+      cursor: "pointer",
+      textDecoration: "none",
+      border: filled ? "none" : `1px solid ${colors.outlineBorder}`,
+      background: filled ? colors.buttonBg : "transparent",
+      color: filled ? colors.buttonText : colors.text,
+    };
+  }
+
   return (
     <div
       style={{
-        position: "relative",
-        minHeight: "100vh",
+        position: "fixed",
+        inset: 0,
+        overflowY: "auto",
+        overflowX: "hidden",
         backgroundColor: colors.background,
-        overflow: "hidden",
         fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
       }}
     >
       <InteractiveGrid gridColor={colors.grid} highlightColor={colors.gridHighlight} />
 
-      <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+      <div style={{ position: "relative", zIndex: 1 }}>
         <nav
           style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 5,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
             padding: "16px 28px",
             background: colors.background,
-            borderBottom: `1px solid ${colors.navBarBorder}`,
-            width: "100%",
+            borderBottom: `1px solid ${colors.border}`,
           }}
         >
           <img
@@ -73,15 +115,34 @@ export default function Home() {
             alt="Notebooook"
             style={{ height: 26, filter: isDark ? "invert(1)" : "none" }}
           />
-          <div style={{ display: "flex", gap: 10 }}>
-            <NavButton label="Log in" colors={colors} />
-            <NavButton label="Sign up" colors={colors} filled />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {!userLoading &&
+              (user ? (
+                <>
+                  <span style={{ fontSize: 14, fontWeight: 500, color: colors.text, marginRight: 6 }}>
+                    {profile?.username ?? ""}
+                  </span>
+                  <button onClick={handleLogout} style={navButtonStyle()}>
+                    Log out
+                  </button>
+                </>
+              ) : (
+                <>
+                  <Link href="/login" style={navButtonStyle()}>
+                    Log in
+                  </Link>
+                  <Link href="/signup" style={navButtonStyle(true)}>
+                    Sign up
+                  </Link>
+                </>
+              ))}
           </div>
         </nav>
 
-        <div
+        <section
           style={{
-            flex: 1,
+            minHeight: "calc(100vh - 140px)",
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
@@ -102,6 +163,7 @@ export default function Home() {
               padding: "14px 32px",
               fontSize: 16,
               fontWeight: 600,
+              fontFamily: "inherit",
               border: "none",
               borderRadius: 10,
               background: colors.buttonBg,
@@ -112,23 +174,36 @@ export default function Home() {
           >
             {creating ? "Creating..." : "New Page"}
           </button>
-        </div>
+        </section>
 
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: 56,
-            flexWrap: "wrap",
-            padding: "40px 20px 60px",
-          }}
-        >
-          {["Write", "Organize", "Share"].map((label) => (
-            <div key={label} style={{ fontSize: 15, fontWeight: 600, color: colors.text }}>
-              {label}
-            </div>
-          ))}
-        </div>
+        <section style={{ display: "flex", justifyContent: "center", padding: "24px 24px 120px" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+              gap: 20,
+              maxWidth: 960,
+              width: "100%",
+            }}
+          >
+            {FEATURES.map((f) => (
+              <div
+                key={f.title}
+                style={{
+                  background: colors.background,
+                  border: `1px solid ${colors.border}`,
+                  borderRadius: 14,
+                  padding: 24,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 700, color: colors.text, marginBottom: 8 }}>
+                  {f.title}
+                </div>
+                <div style={{ fontSize: 15, lineHeight: 1.5, color: colors.subtext }}>{f.body}</div>
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -168,7 +243,7 @@ function InteractiveGrid({ gridColor, highlightColor }: { gridColor: string; hig
 
     const GRID_SIZE = 60;
     const BASE_SIZE = 4;
-    const MAX_SIZE = 12; // back to the original mouse-hover max size
+    const MAX_SIZE = 12;
     const INFLUENCE_RADIUS = 320;
     const DRIFT_SPEED = 6;
 
@@ -196,8 +271,6 @@ function InteractiveGrid({ gridColor, highlightColor }: { gridColor: string; hig
       const cols = Math.ceil(canvas.width / GRID_SIZE) + 2;
       const rows = Math.ceil(canvas.height / GRID_SIZE) + 2;
 
-      // Base grid — original behavior only: size grows near the mouse,
-      // single consistent color throughout, no brightness change.
       ctx.strokeStyle = gridColor;
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -217,8 +290,6 @@ function InteractiveGrid({ gridColor, highlightColor }: { gridColor: string; hig
       }
       ctx.stroke();
 
-      // Ripples only — drawn per-point with individual alpha so each ring
-      // genuinely fades out smoothly, rather than being cut off abruptly.
       if (ripples.current.length > 0) {
         ctx.strokeStyle = highlightColor;
         ctx.lineWidth = 1.5;
@@ -235,7 +306,7 @@ function InteractiveGrid({ gridColor, highlightColor }: { gridColor: string; hig
               const pointDist = Math.hypot(x - ripple.x, y - ripple.y);
               const distFromRing = Math.abs(pointDist - ringRadius);
               const ringStrength = Math.max(0, 1 - distFromRing / RIPPLE_BAND);
-              const fade = Math.max(0, 1 - age / RIPPLE_DURATION); // smooth linear fade to 0
+              const fade = Math.max(0, 1 - age / RIPPLE_DURATION);
               strength = Math.max(strength, ringStrength * fade);
             }
 
@@ -272,27 +343,5 @@ function InteractiveGrid({ gridColor, highlightColor }: { gridColor: string; hig
       ref={canvasRef}
       style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}
     />
-  );
-}
-
-function NavButton({ label, colors, filled }: { label: string; colors: any; filled?: boolean }) {
-  return (
-    <button
-      disabled
-      title="Coming soon"
-      style={{
-        padding: "8px 18px",
-        fontSize: 14,
-        fontWeight: 500,
-        borderRadius: 8,
-        cursor: "not-allowed",
-        border: filled ? "none" : `1px solid ${colors.disabledBorder}`,
-        background: filled ? colors.buttonBg : "transparent",
-        color: filled ? colors.buttonText : colors.text,
-        opacity: 0.5,
-      }}
-    >
-      {label}
-    </button>
   );
 }
