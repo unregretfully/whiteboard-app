@@ -120,7 +120,10 @@ export default function Home() {
             {!userLoading &&
               (user ? (
                 <>
-                  <span style={{ fontSize: 14, fontWeight: 500, color: colors.text, marginRight: 6 }}>
+                  <Link href="/my" style={navButtonStyle()}>
+                    My pages
+                  </Link>
+                  <span style={{ fontSize: 14, fontWeight: 500, color: colors.text, margin: "0 6px" }}>
                     {profile?.username ?? ""}
                   </span>
                   <button onClick={handleLogout} style={navButtonStyle()}>

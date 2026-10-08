@@ -4,6 +4,8 @@ import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Stage, Layer, Text, Rect, Line, Circle, Group, Transformer } from "react-konva";
 import { MousePointer2, Eye, Type, Square, Slash } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { useUser } from "../lib/useUser";
+import Link from "next/link";
 
 const GRID_SIZE = 50;
 const HISTORY_LIMIT = 20;
@@ -24,6 +26,10 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const [stageScale, setStageScale] = useState(1);
   const [isLoaded, setIsLoaded] = useState(false);
   const [pageName, setPageName] = useState<string | null>(null);
+    const [ownerId, setOwnerId] = useState<string | null>(null);
+  const { user, loading: userLoading } = useUser();
+  // View-only once we know this page belongs to someone else
+  const isReadOnly = isLoaded && !userLoading && ownerId !== null && user?.id !== ownerId;
   const [pageNameFocused, setPageNameFocused] = useState(false);
   const [minimapActive, setMinimapActive] = useState(true);
   const minimapTimeoutRef = useRef<any>(null);
@@ -97,33 +103,64 @@ export default function Canvas({ boardId }: { boardId: string }) {
     async function loadBoard() {
       const { data, error } = await supabase
         .from("boards")
-        .select("data, name")
+        .select("data, name, user_id")
         .eq("id", boardId)
         .single();
       if (error) console.error("Load failed:", error);
 
       if (data) {
-        setObjects(data.data as CanvasObject[]);
+                setObjects(
+          (data.data as CanvasObject[]).filter((o) => !(o.type === "text" && o.text.trim() === ""))
+        );
         setPageName(data.name ?? null);
+        setOwnerId(data.user_id ?? null);
       }
       setIsLoaded(true);
     }
     loadBoard();
   }, [boardId]);
 
+  // Autosave. Pending changes are also saved when you leave the page or hide
+  // the tab, so the last thing you typed isn't lost.
+  const pendingSaveRef = useRef(false);
+  const latestRef = useRef({ objects, pageName, boardId, isReadOnly });
+  latestRef.current = { objects, pageName, boardId, isReadOnly };
+
+  async function saveNow() {
+    const { objects: objs, pageName: name, boardId: id, isReadOnly: readOnly } = latestRef.current;
+    if (readOnly || !pendingSaveRef.current) return;
+    pendingSaveRef.current = false;
+    // Never store empty text boxes
+    const cleaned = objs.filter((o) => !(o.type === "text" && o.text.trim() === ""));
+    const { error } = await supabase
+      .from("boards")
+      .update({ data: cleaned, name, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) {
+      console.error("Save failed:", error);
+      pendingSaveRef.current = true;
+    }
+  }
+
   useEffect(() => {
-    if (!isLoaded) return;
-
-    const timeout = setTimeout(async () => {
-      const { error } = await supabase
-        .from("boards")
-        .update({ data: objects, name: pageName, updated_at: new Date().toISOString() })
-        .eq("id", boardId);
-      if (error) console.error("Save failed:", error);
-    }, 800);
-
+    if (!isLoaded || isReadOnly) return;
+    pendingSaveRef.current = true;
+    const timeout = setTimeout(saveNow, 600);
     return () => clearTimeout(timeout);
-  }, [objects, pageName, isLoaded, boardId]);
+  }, [objects, pageName, isLoaded, boardId, isReadOnly]);
+
+  useEffect(() => {
+    function onHide() {
+      if (document.visibilityState === "hidden") saveNow();
+    }
+    window.addEventListener("pagehide", saveNow);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("pagehide", saveNow);
+      document.removeEventListener("visibilitychange", onHide);
+      saveNow(); // leaving this page from inside the app
+    };
+  }, []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -532,7 +569,21 @@ export default function Canvas({ boardId }: { boardId: string }) {
     );
   }
 
+  useEffect(() => {
+    if (isReadOnly) setMode("view");
+  }, [isReadOnly]);
+
+  async function claimBoard() {
+    const { data, error } = await supabase.rpc("claim_board", { board_id: boardId });
+    if (error || !data) {
+      console.error("Claim failed:", error);
+      return;
+    }
+    setOwnerId(user?.id ?? null);
+  }
+
   function switchMode(newMode: Mode) {
+    if (isReadOnly && newMode !== "view") return;
     if (editingId) commitEditing();
     setSelectedId(null);
     setDraft(null);
@@ -885,6 +936,17 @@ export default function Canvas({ boardId }: { boardId: string }) {
         />
       )}
 
+<BoardStatus
+        isLoaded={isLoaded}
+        userLoading={userLoading}
+        ownerId={ownerId}
+        user={user}
+        isReadOnly={isReadOnly}
+        boardId={boardId}
+        onClaim={claimBoard}
+        colors={colors}
+      />
+
       <MiniMap
         objects={objects}
         stagePos={stagePos}
@@ -1208,6 +1270,96 @@ function MiniMap({
           pointerEvents: "none",
         }}
       />
+    </div>
+  );
+}
+
+function BoardStatus({
+  isLoaded,
+  userLoading,
+  ownerId,
+  user,
+  isReadOnly,
+  boardId,
+  onClaim,
+  colors,
+}: {
+  isLoaded: boolean;
+  userLoading: boolean;
+  ownerId: string | null;
+  user: { id: string } | null;
+  isReadOnly: boolean;
+  boardId: string;
+  onClaim: () => void;
+  colors: any;
+}) {
+  if (!isLoaded || userLoading) return null;
+
+  let content: React.ReactNode = null;
+
+  if (isReadOnly) {
+    content = <span>View only. This page belongs to someone else.</span>;
+  } else if (ownerId === null && user) {
+    content = (
+      <>
+        <span>This page isn't saved to your account.</span>
+        <button
+          onClick={onClaim}
+          style={{
+            border: "none",
+            borderRadius: 8,
+            padding: "6px 12px",
+            fontSize: 13,
+            fontWeight: 600,
+            fontFamily: "inherit",
+            cursor: "pointer",
+            background: colors.toolbarActiveBg,
+            color: "#ffffff",
+          }}
+        >
+          Claim page
+        </button>
+      </>
+    );
+  } else if (ownerId === null) {
+    content = (
+      <>
+        <span>Not saved. Pages without an account are deleted after 7 days without a visit.</span>
+        <Link
+          href={`/signup?next=${encodeURIComponent(`/b/${boardId}`)}`}
+          style={{ color: colors.text, fontWeight: 600, textDecoration: "underline" }}
+        >
+          Sign up to keep it
+        </Link>
+      </>
+    );
+  }
+
+  if (!content) return null;
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: 16,
+        left: 16,
+        zIndex: 10,
+        maxWidth: "min(480px, calc(100vw - 240px))",
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: "6px 12px",
+        background: colors.toolbarBg,
+        border: `1px solid ${colors.toolbarBorder}`,
+        borderRadius: 12,
+        padding: "10px 14px",
+        fontSize: 13,
+        color: colors.text,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
+        fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
+      }}
+    >
+      {content}
     </div>
   );
 }

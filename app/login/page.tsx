@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../lib/supabaseClient";
 
+function getNextPath(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [isDark, setIsDark] = useState(false);
@@ -76,7 +81,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/");
+    router.push(getNextPath());
   }
 
   return (

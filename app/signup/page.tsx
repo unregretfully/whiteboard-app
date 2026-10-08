@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../lib/supabaseClient";
 
+function getNextPath(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+}
+
 const RESERVED_USERNAMES = [
   "admin", "support", "help", "login", "signup", "page", "user",
   "my", "feed", "settings", "api", "notebooook", "stats", "b",
@@ -112,7 +117,7 @@ export default function SignupPage() {
       return;
     }
 
-    router.push("/");
+    router.push(getNextPath());
   }
 
   return (
