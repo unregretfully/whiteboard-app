@@ -52,15 +52,14 @@ export default function Home() {
 
   async function handleNewPage() {
     setCreating(true);
-    const { data, error } = await supabase.from("boards").insert({}).select().single();
+    const id = crypto.randomUUID();
+    const { error } = await supabase.from("boards").insert({ id });
     if (error) {
-      console.error("Failed to create board:", error);
+      console.error("Failed to create page:", error);
       setCreating(false);
       return;
     }
-    if (data) {
-      router.push(`/b/${data.id}`);
-    }
+    router.push(`/b/${id}`);
   }
 
   async function handleLogout() {

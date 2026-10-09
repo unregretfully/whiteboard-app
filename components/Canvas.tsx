@@ -2,35 +2,30 @@
 
 import { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Stage, Layer, Text, Rect, Line, Circle, Group, Transformer } from "react-konva";
-import { MousePointer2, Eye, Type, Square, Slash } from "lucide-react";
+import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import { useUser } from "../lib/useUser";
-import Link from "next/link";
+import type { TextObj, ShapeObj, LineObj, CanvasObject, Mode, Access } from "./canvasTypes";
+import { Toolbar, PageBar, PageNameInput, WrapHandle, MiniMap, BoardStatus } from "./CanvasUI";
 
 const GRID_SIZE = 50;
 const HISTORY_LIMIT = 20;
-const MINIMAP_WIDTH = 180;
-const MINIMAP_HEIGHT = 130;
 const MIN_DRAW_SIZE = 5;
-
-type TextObj = { id: string; type: "text"; x: number; y: number; text: string; fontSize: number; wrapWidth: number | null };
-type ShapeObj = { id: string; type: "shape"; x: number; y: number; width: number; height: number };
-type LineObj = { id: string; type: "line"; x1: number; y1: number; x2: number; y2: number };
-type CanvasObject = TextObj | ShapeObj | LineObj;
-
-type Mode = "view" | "select" | "text" | "line" | "shape";
 
 export default function Canvas({ boardId }: { boardId: string }) {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
   const [stageScale, setStageScale] = useState(1);
+
   const [isLoaded, setIsLoaded] = useState(false);
+  const [loadProblem, setLoadProblem] = useState<"missing" | "error" | null>(null);
   const [pageName, setPageName] = useState<string | null>(null);
-    const [ownerId, setOwnerId] = useState<string | null>(null);
-  const { user, loading: userLoading } = useUser();
-  // View-only once we know this page belongs to someone else
-  const isReadOnly = isLoaded && !userLoading && ownerId !== null && user?.id !== ownerId;
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [access, setAccess] = useState<Access>("edit");
+  const [canEdit, setCanEdit] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
   const [pageNameFocused, setPageNameFocused] = useState(false);
+
   const [minimapActive, setMinimapActive] = useState(true);
   const minimapTimeoutRef = useRef<any>(null);
 
@@ -50,16 +45,25 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   const [draft, setDraft] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null);
 
+  const { user, profile, loading: userLoading } = useUser();
+  // The database tells us whether this visitor may edit; otherwise the page is view-only
+  const isReadOnly = isLoaded && !canEdit;
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const trRef = useRef<any>(null);
   const shapeRefs = useRef<Record<string, any>>({});
   const lineRefs = useRef<Record<string, any>>({});
   const wrapHandleRefs = useRef<Record<string, any>>({});
 
+  const pendingSaveRef = useRef(false);
+  const latestRef = useRef({ objects, pageName, boardId, isReadOnly });
+  latestRef.current = { objects, pageName, boardId, isReadOnly };
+
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
     grid: isDark ? "#333333" : "#dddddd",
     text: isDark ? "#ededed" : "#171717",
+    subtext: isDark ? "#a3a3a3" : "#666666",
     toolbarBg: isDark ? "#1a1a1a" : "#ffffff",
     toolbarBorder: isDark ? "#333333" : "#e5e5e5",
     toolbarActiveBg: isDark ? "#6b6b6b" : "#5a5a5a",
@@ -99,22 +103,28 @@ export default function Canvas({ boardId }: { boardId: string }) {
     return () => clearTimeout(minimapTimeoutRef.current);
   }, [stagePos, stageScale]);
 
+  // Load the page through the database function: it only returns pages
+  // this visitor is allowed to see, and needs the exact page id.
   useEffect(() => {
     async function loadBoard() {
-      const { data, error } = await supabase
-        .from("boards")
-        .select("data, name, user_id")
-        .eq("id", boardId)
-        .single();
-      if (error) console.error("Load failed:", error);
-
-      if (data) {
-                setObjects(
-          (data.data as CanvasObject[]).filter((o) => !(o.type === "text" && o.text.trim() === ""))
-        );
-        setPageName(data.name ?? null);
-        setOwnerId(data.user_id ?? null);
+      const { data, error } = await supabase.rpc("get_board", { board_id: boardId });
+      if (error) {
+        console.error("Load failed:", error);
+        setLoadProblem("error");
+        setIsLoaded(true);
+        return;
       }
+      if (!data) {
+        setLoadProblem("missing");
+        setIsLoaded(true);
+        return;
+      }
+      const raw = (data.data ?? []) as CanvasObject[];
+      setObjects(raw.filter((o) => !(o.type === "text" && o.text.trim() === "")));
+      setPageName(data.name ?? null);
+      setOwnerId(data.user_id ?? null);
+      setAccess((data.access as Access) ?? "private");
+      setCanEdit(!!data.can_edit);
       setIsLoaded(true);
     }
     loadBoard();
@@ -122,23 +132,38 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   // Autosave. Pending changes are also saved when you leave the page or hide
   // the tab, so the last thing you typed isn't lost.
-  const pendingSaveRef = useRef(false);
-  const latestRef = useRef({ objects, pageName, boardId, isReadOnly });
-  latestRef.current = { objects, pageName, boardId, isReadOnly };
-
-  async function saveNow() {
+  async function saveNow(): Promise<boolean> {
     const { objects: objs, pageName: name, boardId: id, isReadOnly: readOnly } = latestRef.current;
-    if (readOnly || !pendingSaveRef.current) return;
+    if (readOnly || !pendingSaveRef.current) return false;
     pendingSaveRef.current = false;
     // Never store empty text boxes
     const cleaned = objs.filter((o) => !(o.type === "text" && o.text.trim() === ""));
-    const { error } = await supabase
-      .from("boards")
-      .update({ data: cleaned, name, updated_at: new Date().toISOString() })
-      .eq("id", id);
+    const { data, error } = await supabase.rpc("save_board", {
+      board_id: id,
+      new_data: cleaned,
+      new_name: name,
+    });
     if (error) {
       console.error("Save failed:", error);
       pendingSaveRef.current = true;
+      return false;
+    }
+    if (data === false) {
+      // The database refused (for example, sharing was turned off): go view-only
+      console.error("Save refused: no permission to edit this page.");
+      setCanEdit(false);
+      return false;
+    }
+    return true;
+  }
+
+  async function manualSave() {
+    if (latestRef.current.isReadOnly) return;
+    pendingSaveRef.current = true;
+    const ok = await saveNow();
+    if (ok) {
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1500);
     }
   }
 
@@ -174,9 +199,9 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   // Keep the browser tab title in sync: a manually set page name always
   // wins; otherwise fall back to the first text object's content, or
-  // finally "New Page" if the board is empty.
+  // finally "New Page" if the page is empty.
   useEffect(() => {
-    if (!isLoaded) return;
+    if (!isLoaded || loadProblem) return;
 
     if (pageName && pageName.trim().length > 0) {
       document.title = `${pageName.trim()} – Notebooook`;
@@ -193,7 +218,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     } else {
       document.title = "New Page – Notebooook";
     }
-  }, [objects, pageName, isLoaded]);
+  }, [objects, pageName, isLoaded, loadProblem]);
 
   useEffect(() => {
     if (editingId && textareaRef.current) {
@@ -240,6 +265,18 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // Ctrl+S saves right away (works even while typing)
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (editingId) {
+          commitEditing();
+          setTimeout(manualSave, 50);
+        } else {
+          manualSave();
+        }
+        return;
+      }
+
       if (editingId || pageNameFocused) return;
 
       const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z";
@@ -569,6 +606,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     );
   }
 
+  // Pages you can't edit are view-only
   useEffect(() => {
     if (isReadOnly) setMode("view");
   }, [isReadOnly]);
@@ -580,6 +618,26 @@ export default function Canvas({ boardId }: { boardId: string }) {
       return;
     }
     setOwnerId(user?.id ?? null);
+    setAccess("private");
+    setCanEdit(true);
+  }
+
+  // Returns a message to show in the share menu, or null if it worked
+  async function changeAccess(next: Access): Promise<string | null> {
+    const { data, error } = await supabase.rpc("set_board_access", {
+      board_id: boardId,
+      new_access: next,
+    });
+    if (error) {
+      console.error("Share update failed:", error);
+      return "Couldn't update sharing. Try again.";
+    }
+    if (data === "ok") {
+      setAccess(next);
+      return null;
+    }
+    if (data === "nb_plus_required") return "Anyone-can-edit links are an NB+ feature.";
+    return "Only the page owner can change sharing.";
   }
 
   function switchMode(newMode: Mode) {
@@ -603,6 +661,50 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const cursorStyle =
     mode === "line" || mode === "shape" ? "crosshair" : mode === "view" ? "grab" : "default";
 
+  // Private or missing page (all hooks are above this line)
+  if (loadProblem) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 12,
+          textAlign: "center",
+          padding: 20,
+          background: colors.background,
+          color: colors.text,
+          fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
+        }}
+      >
+        <div style={{ fontSize: 20, fontWeight: 700 }}>
+          {loadProblem === "missing" ? "This page is private or doesn't exist." : "Couldn't load this page."}
+        </div>
+        <div style={{ fontSize: 14, color: colors.subtext }}>
+          {loadProblem === "missing"
+            ? "If it's yours, log in and try again."
+            : "Check your connection and refresh."}
+        </div>
+        <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 14, fontWeight: 600 }}>
+          {!user && !userLoading && (
+            <Link
+              href={`/login?next=${encodeURIComponent(`/b/${boardId}`)}`}
+              style={{ color: colors.text }}
+            >
+              Log in
+            </Link>
+          )}
+          <Link href="/" style={{ color: colors.text }}>
+            Go home
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -614,11 +716,25 @@ export default function Canvas({ boardId }: { boardId: string }) {
         backgroundPosition: `${stagePos.x}px ${stagePos.y}px`,
       }}
     >
-      <Toolbar mode={mode} onSelect={switchMode} colors={colors} />
+      <PageBar
+        homeHref={user ? "/my" : "/"}
+        canSave={!isReadOnly}
+        saved={savedFlash}
+        onSave={manualSave}
+        access={access}
+        ownerId={ownerId}
+        userId={user?.id ?? null}
+        isPremium={profile?.is_premium ?? false}
+        onChangeAccess={changeAccess}
+        colors={colors}
+      />
+
+      <Toolbar mode={mode} onSelect={switchMode} readOnly={isReadOnly} colors={colors} />
 
       <PageNameInput
         pageName={pageName}
         setPageName={setPageName}
+        readOnly={isReadOnly}
         colors={colors}
         onFocusChange={setPageNameFocused}
       />
@@ -936,7 +1052,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
         />
       )}
 
-<BoardStatus
+      <BoardStatus
         isLoaded={isLoaded}
         userLoading={userLoading}
         ownerId={ownerId}
@@ -956,410 +1072,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
         onNavigate={navigateTo}
         active={minimapActive}
       />
-    </div>
-  );
-}
-
-function PageNameInput({
-  pageName,
-  setPageName,
-  colors,
-  onFocusChange,
-}: {
-  pageName: string | null;
-  setPageName: (name: string) => void;
-  colors: any;
-  onFocusChange: (focused: boolean) => void;
-}) {
-  return (
-    <input
-      value={pageName ?? ""}
-      onChange={(e) => setPageName(e.target.value)}
-      onFocus={() => onFocusChange(true)}
-      onBlur={() => onFocusChange(false)}
-      placeholder="Untitled"
-      style={{
-        position: "absolute",
-        top: 16,
-        left: "50%",
-        transform: "translateX(-50%)",
-        zIndex: 10,
-        textAlign: "center",
-        fontSize: 14,
-        fontWeight: 500,
-        fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
-        color: colors.text,
-        background: colors.toolbarBg,
-        border: `1px solid ${colors.toolbarBorder}`,
-        borderRadius: 10,
-        padding: "9px 16px",
-        outline: "none",
-        minWidth: 160,
-        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
-      }}
-    />
-  );
-}
-
-function WrapHandle({
-  obj,
-  shapeRefs,
-  wrapHandleRefs,
-  trRef,
-  commitChange,
-  objects,
-  colors,
-}: {
-  obj: TextObj;
-  shapeRefs: React.MutableRefObject<Record<string, any>>;
-  wrapHandleRefs: React.MutableRefObject<Record<string, any>>;
-  trRef: React.MutableRefObject<any>;
-  commitChange: (newState: CanvasObject[]) => void;
-  objects: CanvasObject[];
-  colors: any;
-}) {
-  const currentWidth = obj.wrapWidth ?? 100;
-  const currentHeight = obj.fontSize * 1.2 * Math.max(1, obj.text.split("\n").length);
-
-  return (
-    <Rect
-      x={obj.x + currentWidth - 3}
-      y={obj.y + currentHeight / 2 - 10}
-      width={6}
-      height={20}
-      cornerRadius={3}
-      fill={colors.toolbarActiveBg}
-      stroke={colors.transformerStroke}
-      strokeWidth={1.5}
-      draggable
-      ref={(node) => {
-        if (node) wrapHandleRefs.current[obj.id] = node;
-      }}
-      onDragStart={(e) => {
-        e.cancelBubble = true;
-      }}
-      onDragMove={(e) => {
-        e.cancelBubble = true;
-        const liveTextNode = shapeRefs.current[obj.id];
-        if (!liveTextNode) return;
-
-        const liveX = liveTextNode.x();
-        const minWidth = Math.max(20, obj.fontSize);
-        const newWidth = Math.max(minWidth, e.target.x() - liveX + 3);
-        liveTextNode.width(newWidth);
-
-        const correctedX = liveX + newWidth - 3;
-        const correctedY = liveTextNode.y() + liveTextNode.height() / 2 - 10;
-        e.target.position({ x: correctedX, y: correctedY });
-
-        trRef.current?.forceUpdate();
-        liveTextNode.getLayer()?.batchDraw();
-      }}
-      onDragEnd={(e) => {
-        e.cancelBubble = true;
-        const liveTextNode = shapeRefs.current[obj.id];
-        const liveX = liveTextNode ? liveTextNode.x() : obj.x;
-        const minWidth = Math.max(20, obj.fontSize);
-        const newWidth = Math.max(minWidth, e.target.x() - liveX + 3);
-        commitChange(
-          objects.map((o) => (o.id === obj.id && o.type === "text" ? { ...o, wrapWidth: newWidth } : o))
-        );
-      }}
-    />
-  );
-}
-
-function Toolbar({
-  mode,
-  onSelect,
-  colors,
-}: {
-  mode: Mode;
-  onSelect: (m: Mode) => void;
-  colors: any;
-}) {
-  const tools: { mode: Mode; label: string; Icon: any }[] = [
-    { mode: "view", label: "View (V)", Icon: Eye },
-    { mode: "select", label: "Select (S)", Icon: MousePointer2 },
-    { mode: "text", label: "Text (T)", Icon: Type },
-    { mode: "line", label: "Line (L)", Icon: Slash },
-    { mode: "shape", label: "Rectangle (R)", Icon: Square },
-  ];
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 16,
-        left: 16,
-        zIndex: 10,
-        display: "flex",
-        gap: 2,
-        background: colors.toolbarBg,
-        border: `1px solid ${colors.toolbarBorder}`,
-        borderRadius: 12,
-        padding: 4,
-        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
-      }}
-    >
-      {tools.map(({ mode: m, label, Icon }) => {
-        const active = mode === m;
-        return (
-          <button
-            key={m}
-            title={label}
-            onClick={() => onSelect(m)}
-            style={{
-              width: 38,
-              height: 38,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "none",
-              borderRadius: 8,
-              cursor: "pointer",
-              background: active ? colors.toolbarActiveBg : "transparent",
-              color: active ? "#ffffff" : colors.text,
-              transition: "background 0.12s ease",
-            }}
-            onMouseEnter={(e) => {
-              if (!active) e.currentTarget.style.background = colors.toolbarHoverBg;
-            }}
-            onMouseLeave={(e) => {
-              if (!active) e.currentTarget.style.background = "transparent";
-            }}
-          >
-            <Icon size={18} strokeWidth={2} />
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function MiniMap({
-  objects,
-  stagePos,
-  stageScale,
-  dimensions,
-  colors,
-  onNavigate,
-  active,
-}: {
-  objects: CanvasObject[];
-  stagePos: { x: number; y: number };
-  stageScale: number;
-  dimensions: { width: number; height: number };
-  colors: any;
-  onNavigate: (worldX: number, worldY: number) => void;
-  active: boolean;
-}) {
-  const [hovered, setHovered] = useState(false);
-  if (dimensions.width === 0) return null;
-
-  const viewport = {
-    left: -stagePos.x / stageScale,
-    top: -stagePos.y / stageScale,
-    right: (-stagePos.x + dimensions.width) / stageScale,
-    bottom: (-stagePos.y + dimensions.height) / stageScale,
-  };
-
-  function boundsOf(obj: CanvasObject) {
-    if (obj.type === "text") {
-      return {
-        left: obj.x,
-        top: obj.y,
-        right: obj.x + Math.max(60, obj.text.length * obj.fontSize * 0.55),
-        bottom: obj.y + obj.fontSize * 1.4,
-      };
-    }
-    if (obj.type === "shape") {
-      return { left: obj.x, top: obj.y, right: obj.x + obj.width, bottom: obj.y + obj.height };
-    }
-    return {
-      left: Math.min(obj.x1, obj.x2),
-      top: Math.min(obj.y1, obj.y2),
-      right: Math.max(obj.x1, obj.x2),
-      bottom: Math.max(obj.y1, obj.y2),
-    };
-  }
-
-  const objectBounds = objects.map(boundsOf);
-
-  const allLefts = [viewport.left, ...objectBounds.map((b) => b.left)];
-  const allTops = [viewport.top, ...objectBounds.map((b) => b.top)];
-  const allRights = [viewport.right, ...objectBounds.map((b) => b.right)];
-  const allBottoms = [viewport.bottom, ...objectBounds.map((b) => b.bottom)];
-
-  const PADDING = 100;
-  const boundsMinX = Math.min(...allLefts) - PADDING;
-  const boundsMinY = Math.min(...allTops) - PADDING;
-  const boundsMaxX = Math.max(...allRights) + PADDING;
-  const boundsMaxY = Math.max(...allBottoms) + PADDING;
-
-  const boundsWidth = Math.max(1, boundsMaxX - boundsMinX);
-  const boundsHeight = Math.max(1, boundsMaxY - boundsMinY);
-
-  const mapScale = Math.min(MINIMAP_WIDTH / boundsWidth, MINIMAP_HEIGHT / boundsHeight);
-  const offsetX = (MINIMAP_WIDTH - boundsWidth * mapScale) / 2;
-  const offsetY = (MINIMAP_HEIGHT - boundsHeight * mapScale) / 2;
-
-  function toMapX(worldX: number) {
-    return offsetX + (worldX - boundsMinX) * mapScale;
-  }
-  function toMapY(worldY: number) {
-    return offsetY + (worldY - boundsMinY) * mapScale;
-  }
-
-  function handleMinimapClick(e: React.MouseEvent<HTMLDivElement>) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-    const worldX = boundsMinX + (clickX - offsetX) / mapScale;
-    const worldY = boundsMinY + (clickY - offsetY) / mapScale;
-    onNavigate(worldX, worldY);
-  }
-
-  const isVisible = active || hovered;
-
-  return (
-    <div
-      onClick={handleMinimapClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        position: "absolute",
-        bottom: 16,
-        right: 16,
-        width: MINIMAP_WIDTH,
-        height: MINIMAP_HEIGHT,
-        background: colors.minimapBg,
-        border: `1px solid ${colors.toolbarBorder}`,
-        borderRadius: 8,
-        cursor: "pointer",
-        overflow: "hidden",
-        zIndex: 10,
-        opacity: isVisible ? 1 : 0.15,
-        transform: isVisible ? "scale(1)" : "scale(0.92)",
-        transition: "opacity 0.25s ease, transform 0.25s ease",
-      }}
-    >
-      {objectBounds.map((b, i) => (
-        <div
-          key={i}
-          style={{
-            position: "absolute",
-            left: toMapX(b.left),
-            top: toMapY(b.top),
-            width: 4,
-            height: 4,
-            borderRadius: 2,
-            background: colors.minimapDot,
-          }}
-        />
-      ))}
-      <div
-        style={{
-          position: "absolute",
-          left: toMapX(viewport.left),
-          top: toMapY(viewport.top),
-          width: Math.max(2, (viewport.right - viewport.left) * mapScale),
-          height: Math.max(2, (viewport.bottom - viewport.top) * mapScale),
-          border: `1.5px solid ${colors.minimapViewport}`,
-          borderRadius: 2,
-          pointerEvents: "none",
-        }}
-      />
-    </div>
-  );
-}
-
-function BoardStatus({
-  isLoaded,
-  userLoading,
-  ownerId,
-  user,
-  isReadOnly,
-  boardId,
-  onClaim,
-  colors,
-}: {
-  isLoaded: boolean;
-  userLoading: boolean;
-  ownerId: string | null;
-  user: { id: string } | null;
-  isReadOnly: boolean;
-  boardId: string;
-  onClaim: () => void;
-  colors: any;
-}) {
-  if (!isLoaded || userLoading) return null;
-
-  let content: React.ReactNode = null;
-
-  if (isReadOnly) {
-    content = <span>View only. This page belongs to someone else.</span>;
-  } else if (ownerId === null && user) {
-    content = (
-      <>
-        <span>This page isn't saved to your account.</span>
-        <button
-          onClick={onClaim}
-          style={{
-            border: "none",
-            borderRadius: 8,
-            padding: "6px 12px",
-            fontSize: 13,
-            fontWeight: 600,
-            fontFamily: "inherit",
-            cursor: "pointer",
-            background: colors.toolbarActiveBg,
-            color: "#ffffff",
-          }}
-        >
-          Claim page
-        </button>
-      </>
-    );
-  } else if (ownerId === null) {
-    content = (
-      <>
-        <span>Not saved. Pages without an account are deleted after 7 days without a visit.</span>
-        <Link
-          href={`/signup?next=${encodeURIComponent(`/b/${boardId}`)}`}
-          style={{ color: colors.text, fontWeight: 600, textDecoration: "underline" }}
-        >
-          Sign up to keep it
-        </Link>
-      </>
-    );
-  }
-
-  if (!content) return null;
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        bottom: 16,
-        left: 16,
-        zIndex: 10,
-        maxWidth: "min(480px, calc(100vw - 240px))",
-        display: "flex",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "6px 12px",
-        background: colors.toolbarBg,
-        border: `1px solid ${colors.toolbarBorder}`,
-        borderRadius: 12,
-        padding: "10px 14px",
-        fontSize: 13,
-        color: colors.text,
-        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
-        fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
-      }}
-    >
-      {content}
     </div>
   );
 }

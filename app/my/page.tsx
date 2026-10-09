@@ -99,13 +99,14 @@ export default function MyPages() {
 
   async function createPage() {
     setCreating(true);
-    const { data, error } = await supabase.from("boards").insert({}).select().single();
-    if (error || !data) {
+    const id = crypto.randomUUID();
+    const { error } = await supabase.from("boards").insert({ id });
+    if (error) {
       console.error("Failed to create page:", error);
       setCreating(false);
       return;
     }
-    router.push(`/b/${data.id}`);
+    router.push(`/b/${id}`);
   }
 
   async function saveRename(id: string) {
