@@ -28,14 +28,16 @@ export default function LoginPage() {
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
 
+  useEffect(() => {
+    document.title = "Log in – NoteBooook";
+  }, []);
+
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
     text: isDark ? "#ededed" : "#171717",
     subtext: isDark ? "#999999" : "#666666",
     inputBg: isDark ? "#1a1a1a" : "#ffffff",
     inputBorder: isDark ? "#333333" : "#e5e5e5",
-    buttonBg: isDark ? "#e5e5e5" : "#2c2c2c",
-    buttonText: isDark ? "#111111" : "#ffffff",
     errorText: isDark ? "#f87171" : "#dc2626",
   };
 
@@ -127,18 +129,14 @@ export default function LoginPage() {
         <button
           type="submit"
           disabled={loading}
+          className="nb-btn-solid"
           style={{
             marginTop: 8,
             padding: "12px 14px",
             fontSize: 14,
             fontWeight: 600,
             fontFamily: "inherit",
-            border: "none",
             borderRadius: 10,
-            background: colors.buttonBg,
-            color: colors.buttonText,
-            cursor: loading ? "default" : "pointer",
-            opacity: loading ? 0.6 : 1,
           }}
         >
           {loading ? "Logging in..." : "Log in"}

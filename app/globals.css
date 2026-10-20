@@ -37,3 +37,93 @@ body {
   from { background-position: 0px 0px; }
   to { background-position: 60px 60px; }
 }
+
+/* ---------- Buttons: no outline, soft fill, hover/press/loading motion ---------- */
+:root {
+  --nb-soft: #f1f1f1;
+  --nb-soft-hover: #e7e7e7;
+  --nb-soft-fg: #171717;
+  --nb-solid: #2c2c2c;
+  --nb-solid-hover: #474747;
+  --nb-solid-fg: #ffffff;
+  --nb-focus: #888888;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --nb-soft: #242424;
+    --nb-soft-hover: #323232;
+    --nb-soft-fg: #ededed;
+    --nb-solid: #e5e5e5;
+    --nb-solid-hover: #ffffff;
+    --nb-solid-fg: #111111;
+    --nb-focus: #bbbbbb;
+  }
+}
+
+.nb-btn,
+.nb-btn-solid {
+  border: none !important;
+  cursor: pointer;
+  transition: background-color 0.18s ease, transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.nb-btn {
+  background: var(--nb-soft) !important;
+  color: var(--nb-soft-fg) !important;
+}
+.nb-btn-solid {
+  background: var(--nb-solid) !important;
+  color: var(--nb-solid-fg) !important;
+}
+
+.nb-btn:hover:not(:disabled) {
+  background: var(--nb-soft-hover) !important;
+  transform: scale(1.04);
+}
+.nb-btn-solid:hover:not(:disabled) {
+  background: var(--nb-solid-hover) !important;
+  transform: scale(1.04);
+}
+
+.nb-btn:active:not(:disabled),
+.nb-btn-solid:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 0.08s;
+}
+
+.nb-btn:focus-visible,
+.nb-btn-solid:focus-visible {
+  outline: 2px solid var(--nb-focus);
+  outline-offset: 2px;
+}
+
+/* While loading (the button is disabled), pulse softly */
+.nb-btn:disabled,
+.nb-btn-solid:disabled {
+  cursor: default;
+  animation: nb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes nb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nb-btn,
+  .nb-btn-solid {
+    transition: background-color 0.18s ease;
+  }
+  .nb-btn:hover:not(:disabled),
+  .nb-btn-solid:hover:not(:disabled),
+  .nb-btn:active:not(:disabled),
+  .nb-btn-solid:active:not(:disabled) {
+    transform: none;
+  }
+  .nb-btn:disabled,
+  .nb-btn-solid:disabled {
+    animation: none;
+    opacity: 0.6;
+  }
+}

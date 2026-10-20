@@ -204,7 +204,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     if (!isLoaded || loadProblem) return;
 
     if (pageName && pageName.trim().length > 0) {
-      document.title = `${pageName.trim()} – Notebooook`;
+      document.title = `${pageName.trim()} – NoteBooook`;
       return;
     }
 
@@ -214,9 +214,9 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
     if (firstText) {
       const preview = firstText.text.trim().split("\n")[0].slice(0, 40);
-      document.title = `${preview} – Notebooook`;
+      document.title = `${preview} – NoteBooook`;
     } else {
-      document.title = "New Page – Notebooook";
+      document.title = "New Page – NoteBooook";
     }
   }, [objects, pageName, isLoaded, loadProblem]);
 

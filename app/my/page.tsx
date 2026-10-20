@@ -43,7 +43,7 @@ export default function MyPages() {
   }, []);
 
   useEffect(() => {
-    document.title = "My pages – Notebooook";
+    document.title = "My pages – NoteBooook";
   }, []);
 
   useEffect(() => {
@@ -66,25 +66,19 @@ export default function MyPages() {
     border: isDark ? "#2a2a2a" : "#ececec",
     cardBg: isDark ? "#1a1a1a" : "#ffffff",
     thumbBg: isDark ? "#151515" : "#f7f7f7",
-    buttonBg: isDark ? "#e5e5e5" : "#2c2c2c",
-    buttonText: isDark ? "#111111" : "#ffffff",
     outlineBorder: isDark ? "#333333" : "#dddddd",
     danger: isDark ? "#f87171" : "#dc2626",
   };
 
-  const pillButton = (filled?: boolean): CSSProperties => ({
+  const pillStyle: CSSProperties = {
     display: "inline-block",
     padding: "8px 16px",
     fontSize: 14,
     fontWeight: 500,
     fontFamily: "inherit",
     borderRadius: 8,
-    cursor: "pointer",
     textDecoration: "none",
-    border: filled ? "none" : `1px solid ${colors.outlineBorder}`,
-    background: filled ? colors.buttonBg : "transparent",
-    color: filled ? colors.buttonText : colors.text,
-  });
+  };
 
   const smallLink: CSSProperties = {
     background: "none",
@@ -155,7 +149,7 @@ export default function MyPages() {
         <Link href="/">
           <img
             src="/logo.png"
-            alt="Notebooook"
+            alt="NoteBooook"
             style={{ height: 26, display: "block", filter: isDark ? "invert(1)" : "none" }}
           />
         </Link>
@@ -164,7 +158,12 @@ export default function MyPages() {
             <span style={{ fontSize: 14, fontWeight: 500, color: colors.text }}>
               {profile?.username ?? ""}
             </span>
-            <button onClick={createPage} disabled={creating} style={pillButton(true)}>
+            <button
+              onClick={createPage}
+              disabled={creating}
+              className="nb-btn-solid"
+              style={pillStyle}
+            >
               {creating ? "Creating..." : "New page"}
             </button>
           </div>
@@ -182,10 +181,10 @@ export default function MyPages() {
               Log in to see your pages.
             </p>
             <div style={{ display: "flex", gap: 10 }}>
-              <Link href="/login?next=/my" style={pillButton()}>
+              <Link href="/login?next=/my" className="nb-btn" style={pillStyle}>
                 Log in
               </Link>
-              <Link href="/signup?next=/my" style={pillButton(true)}>
+              <Link href="/signup?next=/my" className="nb-btn-solid" style={pillStyle}>
                 Sign up
               </Link>
             </div>

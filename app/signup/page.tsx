@@ -5,11 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "../../lib/supabaseClient";
 
-function getNextPath(): string {
-  const next = new URLSearchParams(window.location.search).get("next");
-  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
-}
-
 const RESERVED_USERNAMES = [
   "admin", "support", "help", "login", "signup", "page", "user",
   "my", "feed", "settings", "api", "notebooook", "stats", "b",
@@ -26,6 +21,11 @@ function validateUsername(username: string): string | null {
     return "That username is reserved.";
   }
   return null;
+}
+
+function getNextPath(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
 }
 
 export default function SignupPage() {
@@ -47,14 +47,16 @@ export default function SignupPage() {
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
 
+  useEffect(() => {
+    document.title = "Sign up – NoteBooook";
+  }, []);
+
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
     text: isDark ? "#ededed" : "#171717",
     subtext: isDark ? "#999999" : "#666666",
     inputBg: isDark ? "#1a1a1a" : "#ffffff",
     inputBorder: isDark ? "#333333" : "#e5e5e5",
-    buttonBg: isDark ? "#e5e5e5" : "#2c2c2c",
-    buttonText: isDark ? "#111111" : "#ffffff",
     errorText: isDark ? "#f87171" : "#dc2626",
   };
 
@@ -171,18 +173,14 @@ export default function SignupPage() {
         <button
           type="submit"
           disabled={loading}
+          className="nb-btn-solid"
           style={{
             marginTop: 8,
             padding: "12px 14px",
             fontSize: 14,
             fontWeight: 600,
             fontFamily: "inherit",
-            border: "none",
             borderRadius: 10,
-            background: colors.buttonBg,
-            color: colors.buttonText,
-            cursor: loading ? "default" : "pointer",
-            opacity: loading ? 0.6 : 1,
           }}
         >
           {loading ? "Creating account..." : "Sign up"}

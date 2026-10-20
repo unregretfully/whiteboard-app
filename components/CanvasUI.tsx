@@ -442,6 +442,7 @@ function ShareMenu({
 
           <button
             onClick={copyLink}
+            className="nb-btn"
             style={{
               display: "flex",
               alignItems: "center",
@@ -712,6 +713,7 @@ export function BoardStatus({
         <span>This page isn't saved to your account. Claiming makes it private.</span>
         <button
           onClick={onClaim}
+          className="nb-btn-solid"
           style={{
             border: "none",
             borderRadius: 8,

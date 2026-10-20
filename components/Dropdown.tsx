@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import Link from "next/link";
 
 // Reusable dropdown: you supply the trigger button and the panel content.
-// It fades and slides in/out, closes on outside click or Escape.
+// Fades and slides in/out; closes on outside click or Escape.
+// With openOnHover it also opens when the mouse is over it.
 export function Dropdown({
   trigger,
   children,
@@ -12,6 +14,7 @@ export function Dropdown({
   width = 260,
   bg,
   border,
+  openOnHover = false,
 }: {
   trigger: (api: { open: boolean; toggle: () => void }) => ReactNode;
   children: (api: { close: () => void }) => ReactNode;
@@ -19,9 +22,25 @@ export function Dropdown({
   width?: number;
   bg: string;
   border: string;
+  openOnHover?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearCloseTimer() {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -40,8 +59,31 @@ export function Dropdown({
   }, [open]);
 
   return (
-    <div ref={ref} style={{ position: "relative", display: "inline-flex" }}>
-      {trigger({ open, toggle: () => setOpen((o) => !o) })}
+    <div
+      ref={ref}
+      style={{ position: "relative", display: "inline-flex" }}
+      onMouseEnter={
+        openOnHover
+          ? () => {
+              clearCloseTimer();
+              setOpen(true);
+            }
+          : undefined
+      }
+      onMouseLeave={
+        openOnHover
+          ? () => {
+              clearCloseTimer();
+              closeTimer.current = setTimeout(() => setOpen(false), 180);
+            }
+          : undefined
+      }
+    >
+      {trigger({
+        open,
+        // In hover mode a click only opens, so tapping on touch screens works
+        toggle: () => (openOnHover ? setOpen(true) : setOpen((o) => !o)),
+      })}
       <div
         role="menu"
         aria-hidden={!open}
@@ -70,4 +112,99 @@ export function Dropdown({
       </div>
     </div>
   );
+}
+
+export function MenuItem({
+  icon,
+  label,
+  onClick,
+  href,
+  soon,
+  hoverBg,
+  textColor,
+  mutedColor,
+  borderColor,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick?: () => void;
+  href?: string;
+  soon?: boolean;
+  hoverBg: string;
+  textColor: string;
+  mutedColor: string;
+  borderColor: string;
+}) {
+  const [hover, setHover] = useState(false);
+
+  const base: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "9px 10px",
+    border: "none",
+    borderRadius: 8,
+    textAlign: "left",
+    textDecoration: "none",
+    fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
+    fontSize: 14,
+    fontWeight: 500,
+    color: textColor,
+    background: hover && !soon ? hoverBg : "transparent",
+    cursor: soon ? "default" : "pointer",
+    opacity: soon ? 0.55 : 1,
+    transition: "background 0.12s ease",
+  };
+
+  const content = (
+    <>
+      <span style={{ display: "flex" }}>{icon}</span>
+      <span style={{ flex: 1 }}>{label}</span>
+      {soon && (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "1px 6px",
+            borderRadius: 6,
+            border: `1px solid ${borderColor}`,
+            color: mutedColor,
+          }}
+        >
+          SOON
+        </span>
+      )}
+    </>
+  );
+
+  const handlers = {
+    onMouseEnter: () => setHover(true),
+    onMouseLeave: () => setHover(false),
+  };
+
+  if (soon) {
+    return (
+      <div title="Coming soon" style={base} {...handlers}>
+        {content}
+      </div>
+    );
+  }
+  if (href) {
+    return (
+      <Link href={href} onClick={onClick} style={base} {...handlers}>
+        {content}
+      </Link>
+    );
+  }
+  return (
+    <button onClick={onClick} style={base} {...handlers}>
+      {content}
+    </button>
+  );
+}
+
+export function MenuDivider({ color }: { color: string }) {
+  return <div style={{ height: 1, background: color, margin: "6px 4px" }} />;
 }
