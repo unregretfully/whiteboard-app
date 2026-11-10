@@ -411,7 +411,6 @@ export default function Canvas({ boardId }: { boardId: string }) {
   }
 
   function handleStageMouseDown(e: any) {
-    if (e.target !== e.target.getStage()) return;
     if (mode !== "line" && mode !== "shape") return;
 
     const pointer = e.target.getStage().getPointerPosition();
@@ -802,6 +801,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     stroke={colors.text}
                     strokeWidth={2}
                     hitStrokeWidth={12}
+                    fillEnabled={false}
                     draggable={mode === "select"}
                     ref={(node) => {
                       if (node) shapeRefs.current[obj.id] = node;
