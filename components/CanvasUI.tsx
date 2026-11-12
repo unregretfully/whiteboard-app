@@ -1,4 +1,6 @@
 "use client";
+import { Bold, Italic, Plus, Group as GroupIcon } from "lucide-react";
+
 
 import { useState } from "react";
 import type { CSSProperties, ReactNode, MutableRefObject } from "react";
@@ -158,6 +160,7 @@ export function Toolbar({
   const tools: { mode: Mode; label: string; Icon: any }[] = [
     { mode: "view", label: "View (V)", Icon: Eye },
     { mode: "select", label: "Select (S)", Icon: MousePointer2 },
+    { mode: "multi", label: "Multi-select (M)", Icon: GroupIcon },
     { mode: "text", label: "Text (T)", Icon: Type },
     { mode: "line", label: "Line (L)", Icon: Slash },
     { mode: "shape", label: "Rectangle (R)", Icon: Square },
@@ -773,6 +776,105 @@ export function BoardStatus({
       }}
     >
       {content}
+    </div>
+  );
+}
+
+/* ---------- Bold / italic / new-text-box bar (under a selected text box) ---------- */
+
+function FormatButton({
+  title,
+  active,
+  onClick,
+  colors,
+  children,
+}: {
+  title: string;
+  active: boolean;
+  onClick: () => void;
+  colors: any;
+  children: ReactNode;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        width: 32,
+        height: 32,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: "none",
+        borderRadius: 7,
+        cursor: "pointer",
+        background: active ? colors.toolbarActiveBg : hover ? colors.toolbarHoverBg : "transparent",
+        color: active ? "#ffffff" : colors.text,
+        transition: "background 0.12s ease",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function TextFormatBar({
+  x,
+  y,
+  bold,
+  italic,
+  onBold,
+  onItalic,
+  onNewBox,
+  colors,
+}: {
+  x: number;
+  y: number;
+  bold: boolean;
+  italic: boolean;
+  onBold: () => void;
+  onItalic: () => void;
+  onNewBox: () => void;
+  colors: any;
+}) {
+  return (
+    <div
+      // Keeps the cursor in the text box while you click these buttons
+      onMouseDown={(e) => e.preventDefault()}
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        transform: "translateX(-50%)",
+        zIndex: 15,
+        display: "flex",
+        alignItems: "center",
+        gap: 2,
+        background: colors.toolbarBg,
+        border: `1px solid ${colors.toolbarBorder}`,
+        borderRadius: 10,
+        padding: 3,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.12)",
+      }}
+    >
+      <FormatButton title="Bold (Ctrl+B)" active={bold} onClick={onBold} colors={colors}>
+        <Bold size={16} strokeWidth={2.4} />
+      </FormatButton>
+      <FormatButton title="Italic (Ctrl+I)" active={italic} onClick={onItalic} colors={colors}>
+        <Italic size={16} strokeWidth={2.2} />
+      </FormatButton>
+      <div style={{ width: 1, height: 18, background: colors.toolbarBorder, margin: "0 3px" }} />
+      <FormatButton
+        title="New text box below, same format (Ctrl+Enter)"
+        active={false}
+        onClick={onNewBox}
+        colors={colors}
+      >
+        <Plus size={16} strokeWidth={2.2} />
+      </FormatButton>
     </div>
   );
 }

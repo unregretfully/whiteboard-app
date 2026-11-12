@@ -6,11 +6,26 @@ import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
 import { useUser } from "../lib/useUser";
 import type { TextObj, ShapeObj, LineObj, CanvasObject, Mode, Access } from "./canvasTypes";
-import { Toolbar, PageBar, PageNameInput, WrapHandle, MiniMap, BoardStatus } from "./CanvasUI";
+import {
+  Toolbar,
+  PageBar,
+  PageNameInput,
+  WrapHandle,
+  MiniMap,
+  BoardStatus,
+  TextFormatBar,
+} from "./CanvasUI";
 
 const GRID_SIZE = 50;
 const HISTORY_LIMIT = 20;
 const MIN_DRAW_SIZE = 5;
+
+function konvaFontStyle(o: TextObj) {
+  const parts: string[] = [];
+  if (o.italic) parts.push("italic");
+  if (o.bold) parts.push("bold");
+  return parts.join(" ") || "normal";
+}
 
 export default function Canvas({ boardId }: { boardId: string }) {
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -30,7 +45,13 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const minimapTimeoutRef = useRef<any>(null);
 
   const [objects, setObjects] = useState<CanvasObject[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // Single-object features (wrap handle, format bar, line endpoints) use
+  // selectedId, which only has a value when exactly one object is selected.
+  const selectedId = selectedIds.length === 1 ? selectedIds[0] : null;
+  function setSelectedId(id: string | null) {
+    setSelectedIds(id ? [id] : []);
+  }
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
@@ -43,7 +64,10 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const [past, setPast] = useState<CanvasObject[][]>([]);
   const [future, setFuture] = useState<CanvasObject[][]>([]);
 
+  // Used for the in-progress shape, line, and multi-select drag box
   const [draft, setDraft] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null);
+
+  const [formatBar, setFormatBar] = useState<{ x: number; y: number } | null>(null);
 
   const { user, profile, loading: userLoading } = useUser();
   // The database tells us whether this visitor may edit; otherwise the page is view-only
@@ -53,11 +77,23 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const trRef = useRef<any>(null);
   const shapeRefs = useRef<Record<string, any>>({});
   const lineRefs = useRef<Record<string, any>>({});
+  const lineGroupRefs = useRef<Record<string, any>>({});
   const wrapHandleRefs = useRef<Record<string, any>>({});
+  const outlineRefs = useRef<Record<string, any>>({});
 
   const pendingSaveRef = useRef(false);
   const latestRef = useRef({ objects, pageName, boardId, isReadOnly });
   latestRef.current = { objects, pageName, boardId, isReadOnly };
+
+  // Always-current copies for code that runs later (timeouts, Konva events)
+  const objectsRef = useRef<CanvasObject[]>(objects);
+  objectsRef.current = objects;
+  const selectedIdsRef = useRef<string[]>(selectedIds);
+  selectedIdsRef.current = selectedIds;
+  const uiRef = useRef<any>({});
+  uiRef.current = { objects, selectedIds, stageScale, stagePos, editingId, editingScreenPos, mode, isReadOnly };
+  const dragFlushQueued = useRef(false);
+  const transformFlushQueued = useRef(false);
 
   const colors = {
     background: isDark ? "#111111" : "#ffffff",
@@ -73,6 +109,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     minimapDot: isDark ? "#888888" : "#666666",
     minimapViewport: isDark ? "#6b6b6b" : "#5a5a5a",
     draftStroke: isDark ? "#6b6b6b" : "#5a5a5a",
+    marqueeFill: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)",
   };
 
   function getEffectiveGridSize(scale: number) {
@@ -228,21 +265,35 @@ export default function Canvas({ boardId }: { boardId: string }) {
     }
   }, [editingId]);
 
+  // Attach the resize box to every selected object. One selected line is the
+  // exception: lines use their own endpoint handles, so no box is drawn there.
   useEffect(() => {
     if (!trRef.current) return;
-    const selectedObjForTr = objects.find((o) => o.id === selectedId);
-    if (selectedObjForTr && selectedObjForTr.type !== "line" && shapeRefs.current[selectedId!]) {
-      trRef.current.nodes([shapeRefs.current[selectedId!]]);
-    } else {
-      trRef.current.nodes([]);
-    }
+    const nodes: any[] = [];
+    selectedIds.forEach((id) => {
+      const o = objects.find((x) => x.id === id);
+      if (!o) return;
+      const node = o.type === "line" ? lineGroupRefs.current[id] : shapeRefs.current[id];
+      if (node && node.getStage()) nodes.push(node);
+    });
+    trRef.current.nodes(nodes);
     trRef.current.getLayer()?.batchDraw();
-  }, [selectedId, objects]);
+  }, [selectedIds, objects, mode]);
 
   function commitChange(newState: CanvasObject[]) {
     setPast((prev) => [...prev, objects].slice(-HISTORY_LIMIT));
     setFuture([]);
     setObjects(newState);
+  }
+
+  // Same as commitChange, but builds the new state from the latest objects.
+  // Used by deferred code (multi-select drags and resizes) that would
+  // otherwise read stale data.
+  function commitFromLatest(build: (current: CanvasObject[]) => CanvasObject[]) {
+    const current = objectsRef.current;
+    setPast((prev) => [...prev, current].slice(-HISTORY_LIMIT));
+    setFuture([]);
+    setObjects(build(current));
   }
 
   function undo() {
@@ -295,9 +346,19 @@ export default function Canvas({ boardId }: { boardId: string }) {
         return;
       }
 
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        commitChange(objects.filter((o) => o.id !== selectedId));
-        setSelectedId(null);
+      // Ctrl+B / Ctrl+I on a selected text box
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && selectedId) {
+        const k = e.key.toLowerCase();
+        if (k === "b" || k === "i") {
+          e.preventDefault();
+          toggleFormat(k === "b" ? "bold" : "italic");
+          return;
+        }
+      }
+
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.length > 0) {
+        commitChange(objects.filter((o) => !selectedIds.includes(o.id)));
+        setSelectedIds([]);
         return;
       }
 
@@ -313,6 +374,10 @@ export default function Canvas({ boardId }: { boardId: string }) {
           switchMode("select");
           return;
         }
+        if (key === "m") {
+          switchMode("multi");
+          return;
+        }
         if (key === "t") {
           switchMode("text");
           return;
@@ -326,8 +391,8 @@ export default function Canvas({ boardId }: { boardId: string }) {
           return;
         }
         if (e.key === "Escape") {
-          if (selectedId) {
-            setSelectedId(null);
+          if (selectedIds.length > 0) {
+            setSelectedIds([]);
           } else {
             switchMode("select");
           }
@@ -337,7 +402,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedId, editingId, objects, past, future, mode, pageNameFocused]);
+  }, [selectedIds, editingId, objects, past, future, mode, pageNameFocused]);
 
   function autosizeTextarea(el: HTMLTextAreaElement, isAutoWidth: boolean) {
     el.style.height = "auto";
@@ -410,8 +475,9 @@ export default function Canvas({ boardId }: { boardId: string }) {
     };
   }
 
+  // Line, rectangle, and multi-select all start with a click-and-drag
   function handleStageMouseDown(e: any) {
-    if (mode !== "line" && mode !== "shape") return;
+    if (mode !== "line" && mode !== "shape" && mode !== "multi") return;
 
     const pointer = e.target.getStage().getPointerPosition();
     const world = toWorld(pointer);
@@ -424,10 +490,43 @@ export default function Canvas({ boardId }: { boardId: string }) {
     setDraft({ ...draft, current: toWorld(pointer) });
   }
 
+  // Everything the dragged box touches becomes selected, then we switch to
+  // the regular Select tool so it can be moved or resized right away.
+  function finishMarquee(start: { x: number; y: number }, current: { x: number; y: number }) {
+    const x1 = Math.min(start.x, current.x);
+    const x2 = Math.max(start.x, current.x);
+    const y1 = Math.min(start.y, current.y);
+    const y2 = Math.max(start.y, current.y);
+    setDraft(null);
+
+    if (x2 - x1 < MIN_DRAW_SIZE && y2 - y1 < MIN_DRAW_SIZE) {
+      setSelectedIds([]);
+      return;
+    }
+
+    const hits = objects
+      .filter((o) => {
+        const node = o.type === "line" ? lineGroupRefs.current[o.id] : shapeRefs.current[o.id];
+        if (!node || !node.getStage()) return false;
+        const r = node.getClientRect({ relativeTo: node.getLayer() });
+        return r.x < x2 && r.x + r.width > x1 && r.y < y2 && r.y + r.height > y1;
+      })
+      .map((o) => o.id);
+
+    setSelectedIds(hits);
+    if (hits.length > 0) setMode("select");
+  }
+
   function handleStageMouseUp() {
     if (!draft) return;
 
     const { start, current } = draft;
+
+    if (mode === "multi") {
+      finishMarquee(start, current);
+      return;
+    }
+
     const dx = Math.abs(current.x - start.x);
     const dy = Math.abs(current.y - start.y);
 
@@ -462,8 +561,8 @@ export default function Canvas({ boardId }: { boardId: string }) {
     if (e.target !== e.target.getStage()) return;
     if (mode !== "select" && mode !== "text") return;
 
-    if (selectedId) {
-      setSelectedId(null);
+    if (selectedIds.length > 0) {
+      setSelectedIds([]);
       return;
     }
 
@@ -490,7 +589,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
 
     if (trimmed === "") {
       setObjects((prev) => prev.filter((obj) => obj.id !== editingId));
-      setSelectedId(null);
+      setSelectedIds([]);
     } else if (editingIsNew) {
       const before = objects.filter((o) => o.id !== editingId);
       const after = objects.map((o) =>
@@ -523,11 +622,240 @@ export default function Canvas({ boardId }: { boardId: string }) {
     });
   }
 
+  // Click selects one object; Shift+click adds or removes it from the selection
+  function selectObject(id: string, additive: boolean) {
+    setSelectedIds((prev) =>
+      additive ? (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]) : [id]
+    );
+  }
+
+  // Bold / italic apply to the whole text box
+  function toggleFormat(key: "bold" | "italic") {
+    const id = editingId ?? selectedId;
+    if (!id) return;
+    const target = objects.find((o) => o.id === id);
+    if (!target || target.type !== "text") return;
+
+    const patch = key === "bold" ? { bold: !target.bold } : { italic: !target.italic };
+    const next = objects.map((o) => (o.id === id && o.type === "text" ? { ...o, ...patch } : o));
+
+    // While typing, apply it without its own undo step (the edit itself is the step)
+    if (editingId) setObjects(next);
+    else commitChange(next);
+  }
+
+  // New text box right below the current one, with the same size, width, bold, and italic
+  function addTextBelow() {
+    const srcId = editingId ?? selectedId;
+    const src = objects.find((o) => o.id === srcId);
+    if (!src || src.type !== "text") return;
+
+    let heightWorld: number;
+    if (editingId && textareaRef.current) {
+      heightWorld = textareaRef.current.offsetHeight / stageScale;
+    } else {
+      const node = shapeRefs.current[src.id];
+      heightWorld = node && node.getStage() ? node.height() : src.fontSize * 1.2;
+    }
+
+    if (editingId) commitEditing();
+
+    const newId = crypto.randomUUID();
+    const world = { x: src.x, y: src.y + heightWorld + 8 };
+    const newObj: TextObj = {
+      id: newId,
+      type: "text",
+      x: world.x,
+      y: world.y,
+      text: "",
+      fontSize: src.fontSize,
+      wrapWidth: src.wrapWidth,
+      bold: src.bold,
+      italic: src.italic,
+    };
+
+    setObjects((prev) => [...prev, newObj]);
+    setSelectedId(newId);
+    setEditingId(newId);
+    setEditingValue("");
+    setEditingIsNew(true);
+    setEditingScreenPos({
+      x: world.x * stageScale + stagePos.x,
+      y: world.y * stageScale + stagePos.y,
+    });
+  }
+
+  // Works out where the bold/italic bar goes (just below the text box)
+  function recomputeFormatBar() {
+    const s = uiRef.current;
+    let next: { x: number; y: number } | null = null;
+
+    if (s.selectedIds && s.selectedIds.length === 1 && !s.isReadOnly) {
+      const id = s.selectedIds[0];
+      const o = s.objects.find((x: CanvasObject) => x.id === id);
+      const showing = s.mode === "select" || (s.mode === "text" && s.editingId === id);
+
+      if (o && o.type === "text" && showing) {
+        if (s.editingId === id) {
+          const ta = textareaRef.current;
+          if (ta) {
+            next = {
+              x: s.editingScreenPos.x + ta.offsetWidth / 2,
+              y: s.editingScreenPos.y + ta.offsetHeight + 14,
+            };
+          }
+        } else {
+          const node = shapeRefs.current[id];
+          if (node && node.getStage()) {
+            const r = node.getClientRect({ relativeTo: node.getLayer() });
+            next = {
+              x: (r.x + r.width / 2) * s.stageScale + s.stagePos.x,
+              y: (r.y + r.height) * s.stageScale + s.stagePos.y + 14,
+            };
+          }
+        }
+      }
+    }
+
+    setFormatBar((prev) =>
+      prev === next || (prev && next && prev.x === next.x && prev.y === next.y) ? prev : next
+    );
+  }
+
+  useLayoutEffect(() => {
+    recomputeFormatBar();
+  }, [objects, selectedIds, mode, editingId, editingValue, editingScreenPos, stageScale, stagePos, isReadOnly]);
+
+  // While the wrap handle is dragged, keep the bar glued under the box
+  useEffect(() => {
+    if (!selectedId) return;
+    const handle = wrapHandleRefs.current[selectedId];
+    if (!handle) return;
+    handle.on("dragmove.fmtbar", recomputeFormatBar);
+    return () => {
+      handle.off("dragmove.fmtbar");
+    };
+  }, [selectedId, objects, mode]);
+
+  // Faint outlines around each object when several are selected
+  function syncOutlines() {
+    const ids = selectedIdsRef.current;
+    if (ids.length < 2) return;
+    let layer: any = null;
+    ids.forEach((id) => {
+      const node = shapeRefs.current[id] ?? lineGroupRefs.current[id];
+      const outline = outlineRefs.current[id];
+      if (!node || !outline || !node.getStage()) return;
+      layer = node.getLayer();
+      const r = node.getClientRect({ relativeTo: layer });
+      outline.setAttrs({ x: r.x - 2, y: r.y - 2, width: r.width + 4, height: r.height + 4 });
+    });
+    layer?.batchDraw();
+  }
+
+  useLayoutEffect(() => {
+    syncOutlines();
+  }, [objects, selectedIds, mode]);
+
   function handleDragEnd(id: string, node: any, type: CanvasObject["type"]) {
     if (type === "line") return;
+    if (selectedIdsRef.current.length > 1 && selectedIdsRef.current.includes(id)) {
+      scheduleMultiDragCommit();
+      return;
+    }
     commitChange(
       objects.map((o) => (o.id === id ? { ...o, x: node.x(), y: node.y() } : o))
     );
+  }
+
+  // When a group is dragged, every object fires its own drag-end. This waits
+  // a moment, then saves all the new positions as ONE undo step.
+  function scheduleMultiDragCommit() {
+    if (dragFlushQueued.current) return;
+    dragFlushQueued.current = true;
+    setTimeout(() => {
+      dragFlushQueued.current = false;
+      const ids = selectedIdsRef.current;
+      commitFromLatest((current) =>
+        current.map((o) => {
+          if (!ids.includes(o.id)) return o;
+          if (o.type === "line") {
+            const g = lineGroupRefs.current[o.id];
+            if (!g) return o;
+            const dx = g.x();
+            const dy = g.y();
+            g.x(0);
+            g.y(0);
+            return { ...o, x1: o.x1 + dx, y1: o.y1 + dy, x2: o.x2 + dx, y2: o.y2 + dy };
+          }
+          const node = shapeRefs.current[o.id];
+          if (!node) return o;
+          return { ...o, x: node.x(), y: node.y() };
+        })
+      );
+    }, 0);
+  }
+
+  // Same idea for resizing a group: every object scales by the same amount
+  function scheduleMultiTransformCommit() {
+    if (transformFlushQueued.current) return;
+    transformFlushQueued.current = true;
+    setTimeout(() => {
+      transformFlushQueued.current = false;
+      const ids = selectedIdsRef.current;
+      commitFromLatest((current) =>
+        current.map((o) => {
+          if (!ids.includes(o.id)) return o;
+
+          if (o.type === "line") {
+            const g = lineGroupRefs.current[o.id];
+            if (!g) return o;
+            const sx = g.scaleX();
+            const sy = g.scaleY();
+            const gx = g.x();
+            const gy = g.y();
+            g.scaleX(1);
+            g.scaleY(1);
+            g.x(0);
+            g.y(0);
+            return {
+              ...o,
+              x1: gx + o.x1 * sx,
+              y1: gy + o.y1 * sy,
+              x2: gx + o.x2 * sx,
+              y2: gy + o.y2 * sy,
+            };
+          }
+
+          const node = shapeRefs.current[o.id];
+          if (!node) return o;
+          const sx = node.scaleX();
+          const sy = node.scaleY();
+          const x = node.x();
+          const y = node.y();
+          node.scaleX(1);
+          node.scaleY(1);
+
+          if (o.type === "text") {
+            return {
+              ...o,
+              x,
+              y,
+              fontSize: Math.max(6, Math.round(o.fontSize * sx * 10) / 10),
+              wrapWidth: o.wrapWidth ? Math.max(20, Math.round(o.wrapWidth * sx)) : null,
+            };
+          }
+
+          return {
+            ...o,
+            x,
+            y,
+            width: Math.max(10, Math.round(o.width * sx)),
+            height: Math.max(10, Math.round(o.height * sy)),
+          };
+        })
+      );
+    }, 0);
   }
 
   function repositionWrapHandle(objId: string) {
@@ -548,6 +876,11 @@ export default function Canvas({ boardId }: { boardId: string }) {
   }, [objects, selectedId]);
 
   function handleTransformEnd(obj: TextObj | ShapeObj) {
+    if (selectedIdsRef.current.length > 1) {
+      scheduleMultiTransformCommit();
+      return;
+    }
+
     const node = shapeRefs.current[obj.id];
     if (!node) return;
 
@@ -579,6 +912,10 @@ export default function Canvas({ boardId }: { boardId: string }) {
   }
 
   function handleLineBodyDragEnd(obj: LineObj, node: any) {
+    if (selectedIdsRef.current.length > 1 && selectedIdsRef.current.includes(obj.id)) {
+      scheduleMultiDragCommit();
+      return;
+    }
     const dx = node.x();
     const dy = node.y();
     node.x(0);
@@ -642,7 +979,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
   function switchMode(newMode: Mode) {
     if (isReadOnly && newMode !== "view") return;
     if (editingId) commitEditing();
-    setSelectedId(null);
+    setSelectedIds([]);
     setDraft(null);
     setMode(newMode);
   }
@@ -657,8 +994,13 @@ export default function Canvas({ boardId }: { boardId: string }) {
   const editingObj = objects.find((o) => o.id === editingId) as TextObj | undefined;
   const effectiveGridSize = getEffectiveGridSize(stageScale);
   const selectedObj = objects.find((o) => o.id === selectedId);
+  const formatTarget = selectedObj && selectedObj.type === "text" ? selectedObj : null;
   const cursorStyle =
-    mode === "line" || mode === "shape" ? "crosshair" : mode === "view" ? "grab" : "default";
+    mode === "line" || mode === "shape" || mode === "multi"
+      ? "crosshair"
+      : mode === "view"
+      ? "grab"
+      : "default";
 
   // Private or missing page (all hooks are above this line)
   if (loadProblem) {
@@ -767,6 +1109,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     y={obj.y}
                     width={obj.wrapWidth ?? undefined}
                     fontSize={obj.fontSize}
+                    fontStyle={konvaFontStyle(obj)}
                     lineHeight={1.2}
                     fill={colors.text}
                     draggable={mode === "select"}
@@ -776,15 +1119,23 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     onClick={(e) => {
                       if (mode !== "select") return;
                       e.cancelBubble = true;
-                      setSelectedId(obj.id);
+                      selectObject(obj.id, e.evt.shiftKey);
                     }}
                     onDblClick={(e) => {
                       e.cancelBubble = true;
                       startEditingExisting(obj);
                     }}
-                    onDragMove={() => repositionWrapHandle(obj.id)}
+                    onDragMove={() => {
+                      repositionWrapHandle(obj.id);
+                      syncOutlines();
+                      recomputeFormatBar();
+                    }}
                     onDragEnd={(e) => handleDragEnd(obj.id, e.target, "text")}
-                    onTransform={() => repositionWrapHandle(obj.id)}
+                    onTransform={() => {
+                      repositionWrapHandle(obj.id);
+                      syncOutlines();
+                      recomputeFormatBar();
+                    }}
                     onTransformEnd={() => handleTransformEnd(obj)}
                   />
                 );
@@ -809,9 +1160,11 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     onClick={(e) => {
                       if (mode !== "select") return;
                       e.cancelBubble = true;
-                      setSelectedId(obj.id);
+                      selectObject(obj.id, e.evt.shiftKey);
                     }}
+                    onDragMove={() => syncOutlines()}
                     onDragEnd={(e) => handleDragEnd(obj.id, e.target, "shape")}
+                    onTransform={() => syncOutlines()}
                     onTransformEnd={() => handleTransformEnd(obj)}
                   />
                 );
@@ -822,7 +1175,15 @@ export default function Canvas({ boardId }: { boardId: string }) {
                 <Group
                   key={obj.id}
                   draggable={mode === "select"}
+                  ref={(node) => {
+                    if (node) lineGroupRefs.current[obj.id] = node;
+                  }}
+                  onDragMove={() => syncOutlines()}
                   onDragEnd={(e) => handleLineBodyDragEnd(obj, e.target)}
+                  onTransform={() => syncOutlines()}
+                  onTransformEnd={() => {
+                    if (selectedIdsRef.current.length > 1) scheduleMultiTransformCommit();
+                  }}
                 >
                   <Line
                     ref={(node) => {
@@ -835,7 +1196,7 @@ export default function Canvas({ boardId }: { boardId: string }) {
                     onClick={(e) => {
                       if (mode !== "select") return;
                       e.cancelBubble = true;
-                      setSelectedId(obj.id);
+                      selectObject(obj.id, e.evt.shiftKey);
                     }}
                   />
                   {isSelected && mode === "select" && (
@@ -892,59 +1253,85 @@ export default function Canvas({ boardId }: { boardId: string }) {
               );
             })}
 
-          {draft && (mode === "shape" ? (
-            <Rect
-              x={Math.min(draft.start.x, draft.current.x)}
-              y={Math.min(draft.start.y, draft.current.y)}
-              width={Math.abs(draft.current.x - draft.start.x)}
-              height={Math.abs(draft.current.y - draft.start.y)}
-              stroke={colors.draftStroke}
-              strokeWidth={2}
-              dash={[6, 4]}
-              fill="transparent"
-              listening={false}
-            />
-          ) : (
-            <Line
-              points={[draft.start.x, draft.start.y, draft.current.x, draft.current.y]}
-              stroke={colors.draftStroke}
-              strokeWidth={3}
-              dash={[6, 4]}
-              listening={false}
-            />
-          ))}
-
-          {selectedObj && selectedObj.type !== "line" && mode === "select" && selectedObj.id !== editingId && (
-            <>
-              <Transformer
-                ref={trRef}
-                enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
-                rotateEnabled={false}
-                keepRatio={true}
-                borderStroke={colors.transformerStroke}
-                borderStrokeWidth={1.5}
-                anchorStroke={colors.transformerStroke}
-                anchorFill={isDark ? "#1a1a1a" : "#ffffff"}
-                anchorSize={8}
-                boundBoxFunc={(oldBox, newBox) => {
-                  if (newBox.width < 20 || newBox.height < 20) return oldBox;
-                  return newBox;
+          {/* Faint outline around each object in a multi-selection */}
+          {mode === "select" &&
+            selectedIds.length > 1 &&
+            selectedIds.map((id) => (
+              <Rect
+                key={`outline-${id}`}
+                ref={(node) => {
+                  if (node) outlineRefs.current[id] = node;
                 }}
+                x={0}
+                y={0}
+                width={0}
+                height={0}
+                stroke={colors.transformerStroke}
+                strokeWidth={1}
+                cornerRadius={2}
+                listening={false}
               />
+            ))}
 
-              {selectedObj.type === "text" && (
-                <WrapHandle
-                  obj={selectedObj}
-                  shapeRefs={shapeRefs}
-                  wrapHandleRefs={wrapHandleRefs}
-                  trRef={trRef}
-                  commitChange={commitChange}
-                  objects={objects}
-                  colors={colors}
+          {draft &&
+            (mode === "shape" || mode === "multi" ? (
+              <Rect
+                x={Math.min(draft.start.x, draft.current.x)}
+                y={Math.min(draft.start.y, draft.current.y)}
+                width={Math.abs(draft.current.x - draft.start.x)}
+                height={Math.abs(draft.current.y - draft.start.y)}
+                stroke={colors.draftStroke}
+                strokeWidth={mode === "multi" ? 1 : 2}
+                dash={[6, 4]}
+                fill={mode === "multi" ? colors.marqueeFill : "transparent"}
+                listening={false}
+              />
+            ) : (
+              <Line
+                points={[draft.start.x, draft.start.y, draft.current.x, draft.current.y]}
+                stroke={colors.draftStroke}
+                strokeWidth={3}
+                dash={[6, 4]}
+                listening={false}
+              />
+            ))}
+
+          {mode === "select" &&
+            !editingId &&
+            selectedIds.length > 0 &&
+            (selectedIds.length > 1 || (selectedObj && selectedObj.type !== "line")) && (
+              <>
+                <Transformer
+                  ref={trRef}
+                  enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+                  rotateEnabled={false}
+                  flipEnabled={false}
+                  keepRatio={true}
+                  shouldOverdrawWholeArea={selectedIds.length > 1}
+                  borderStroke={colors.transformerStroke}
+                  borderStrokeWidth={1.5}
+                  anchorStroke={colors.transformerStroke}
+                  anchorFill={isDark ? "#1a1a1a" : "#ffffff"}
+                  anchorSize={8}
+                  boundBoxFunc={(oldBox, newBox) => {
+                    if (newBox.width < 20 || newBox.height < 20) return oldBox;
+                    return newBox;
+                  }}
                 />
-              )}
-            </>
-          )}
+
+                {selectedIds.length === 1 && selectedObj && selectedObj.type === "text" && (
+                  <WrapHandle
+                    obj={selectedObj}
+                    shapeRefs={shapeRefs}
+                    wrapHandleRefs={wrapHandleRefs}
+                    trRef={trRef}
+                    commitChange={commitChange}
+                    objects={objects}
+                    colors={colors}
+                  />
+                )}
+              </>
+            )}
         </Layer>
       </Stage>
 
@@ -959,35 +1346,19 @@ export default function Canvas({ boardId }: { boardId: string }) {
               commitEditing();
               return;
             }
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "b" || e.key === "B")) {
+              e.preventDefault();
+              toggleFormat("bold");
+              return;
+            }
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "i" || e.key === "I")) {
+              e.preventDefault();
+              toggleFormat("italic");
+              return;
+            }
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
-              const currentObj = objects.find((o) => o.id === editingId) as TextObj | undefined;
-              if (!currentObj) return;
-
-              const lineCount = Math.max(1, editingValue.split("\n").length);
-              const totalHeightWorld = (currentObj.fontSize ?? 20) * 1.2 * lineCount;
-              const totalHeightScreen = totalHeightWorld * stageScale;
-              const newScreenY = editingScreenPos.y + totalHeightScreen + 8;
-
-              commitEditing();
-
-              const newId = crypto.randomUUID();
-              const newObj: TextObj = {
-                id: newId,
-                type: "text",
-                x: currentObj.x,
-                y: currentObj.y + totalHeightWorld + 8,
-                text: "",
-                fontSize: currentObj.fontSize,
-                wrapWidth: currentObj.wrapWidth,
-              };
-
-              setObjects((prev) => [...prev, newObj]);
-              setSelectedId(newId);
-              setEditingId(newId);
-              setEditingValue("");
-              setEditingIsNew(true);
-              setEditingScreenPos({ x: editingScreenPos.x, y: newScreenY });
+              addTextBelow();
               return;
             }
             if (e.key === "Enter") {
@@ -1033,6 +1404,8 @@ export default function Canvas({ boardId }: { boardId: string }) {
             left: editingScreenPos.x,
             width: editingObj?.wrapWidth ? editingObj.wrapWidth * stageScale : undefined,
             fontSize: (editingObj?.fontSize ?? 20) * stageScale,
+            fontWeight: editingObj?.bold ? 700 : 400,
+            fontStyle: editingObj?.italic ? "italic" : "normal",
             lineHeight: 1.2,
             fontFamily: "var(--font-funnel-sans), Arial, sans-serif",
             color: colors.text,
@@ -1049,6 +1422,19 @@ export default function Canvas({ boardId }: { boardId: string }) {
             overflowWrap: "break-word",
             transition: "height 0.08s ease-out",
           }}
+        />
+      )}
+
+      {formatBar && formatTarget && (
+        <TextFormatBar
+          x={Math.max(80, Math.min(formatBar.x, dimensions.width - 80))}
+          y={Math.min(formatBar.y, dimensions.height - 54)}
+          bold={!!formatTarget.bold}
+          italic={!!formatTarget.italic}
+          onBold={() => toggleFormat("bold")}
+          onItalic={() => toggleFormat("italic")}
+          onNewBox={addTextBelow}
+          colors={colors}
         />
       )}
 
